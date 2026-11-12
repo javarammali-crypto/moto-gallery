@@ -91,6 +91,19 @@ import com.javaram.gallery.ui.components.rememberMediaRequest
 import com.javaram.gallery.ui.components.requestManageMedia
 import com.javaram.gallery.ui.components.shareMedia
 import com.javaram.gallery.ui.theme.GalleryTheme
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.SystemUpdate
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import com.javaram.gallery.ui.UpdateDialog
+import com.javaram.gallery.ui.components.ConfirmRequest
+import com.javaram.gallery.ui.components.GlassDialog
+import com.javaram.gallery.ui.components.GlassPopupMenu
+import com.javaram.gallery.ui.components.GridHandle
+import com.javaram.gallery.ui.components.PopupAnchor
+import com.javaram.gallery.ui.viewer.ViewerOverlay
+import com.javaram.gallery.ui.viewer.ViewerSession
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
 
@@ -111,7 +124,6 @@ private sealed interface HomeSheet {
 @Composable
 fun HomeScreen(
     vm: GalleryViewModel,
-    onOpen: (List<Media>, Media) -> Unit,
     onOpenAlbum: (String) -> Unit,
     onOpenTrash: () -> Unit,
 ) {
@@ -126,14 +138,23 @@ fun HomeScreen(
     val albumSort by vm.albumSort.collectAsStateWithLifecycle()
     val canManage by vm.canManageMedia.collectAsStateWithLifecycle()
     val bannerDismissed by vm.bannerDismissed.collectAsStateWithLifecycle()
+    val update by vm.update.collectAsStateWithLifecycle()
 
     var selectionMode by rememberSaveable { mutableStateOf(false) }
     var selection by remember { mutableStateOf(emptySet<Long>()) }
     var sheet by remember { mutableStateOf<HomeSheet?>(null) }
+    var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
+    var session by remember { mutableStateOf<ViewerSession?>(null) }
+    var hiddenId by remember { mutableStateOf<Long?>(null) }
+
+    var moreAnchor by remember { mutableStateOf<Rect?>(null) }
+    var layoutAnchor by remember { mutableStateOf<Rect?>(null) }
+    var secondaryAnchor by remember { mutableStateOf<Rect?>(null) }
 
     val photosState = rememberLazyGridState()
     val albumsState = rememberLazyGridState()
     val createState = rememberLazyGridState()
+    val photosHandle = remember { GridHandle() }
 
     val photos = remember(all, filter) {
         when (filter) {
@@ -144,6 +165,7 @@ fun HomeScreen(
         }
     }
     val videoCount = remember(all) { all.count { it.isVideo } }
+    val byId = remember(all) { all.associateBy { it.id } }
 
     fun exitSelection() {
         selectionMode = false
@@ -153,6 +175,7 @@ fun HomeScreen(
     LaunchedEffect(tab) { if (tab != HomeTab.Photos) exitSelection() }
     BackHandler(enabled = selectionMode) { exitSelection() }
     BackHandler(enabled = sheet != null) { sheet = null }
+    BackHandler(enabled = confirm != null) { confirm = null }
 
     val request = rememberMediaRequest { ok ->
         if (ok) exitSelection()
@@ -175,7 +198,7 @@ fun HomeScreen(
             AnimatedContent(
                 targetState = tab,
                 transitionSpec = {
-                    (fadeIn(tween(240)) + scaleIn(tween(280), initialScale = 0.985f)) togetherWith fadeOut(tween(140))
+                    (fadeIn(tween(220)) + scaleIn(tween(260), initialScale = 0.985f)) togetherWith fadeOut(tween(120))
                 },
                 label = "tabs",
             ) { t ->
@@ -188,11 +211,13 @@ fun HomeScreen(
                         loaded = loaded,
                         columns = columns,
                         state = photosState,
+                        handle = photosHandle,
+                        hiddenId = hiddenId,
                         selection = selection,
                         selectionMode = selectionMode,
                         onSelectionChange = { selection = it },
                         onEnterSelection = { selectionMode = true },
-                        onOpen = { m -> onOpen(photos, m) },
+                        onOpen = { m -> session = ViewerSession(photos.map { it.id }, m.id) },
                         onColumnsChange = vm::setColumns,
                         showBanner = !canManage && !bannerDismissed,
                         onAllowManage = { requestManageMedia(context) },
@@ -269,18 +294,14 @@ fun HomeScreen(
                     Spacer(Modifier.width(10.dp))
                 }
                 if (tab != HomeTab.Create) {
-                    GlassIconButton(haze, Icons.Outlined.MoreVert, "More", size = 42.dp) { sheet = HomeSheet.More }
+                    Box(Modifier.onGloballyPositioned { moreAnchor = it.boundsInRoot() }) {
+                        GlassIconButton(haze, Icons.Outlined.MoreVert, "More", size = 42.dp) { sheet = HomeSheet.More }
+                    }
                 }
             }
         }
 
-        // ---- Bottom: tab bar or selection actions ----
-        ProgressiveGlass(
-            state = haze,
-            fadeDown = false,
-            visibleAlpha = 0.85f,
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(130.dp),
-        ) {}
+        // ---- Bottom: floating tab bar or selection actions (only the controls are glass) ----
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -303,7 +324,17 @@ fun HomeScreen(
                         allFavorite = allFav,
                         onShare = { shareMedia(context, selectedItems) },
                         onFavorite = { request(vm.favoriteRequest(selectedItems, !allFav)) },
-                        onDelete = { request(vm.trashRequest(selectedItems)) },
+                        onDelete = {
+                            val items = selectedItems
+                            val doIt = { request(vm.trashRequest(items)) }
+                            if (canManage) {
+                                confirm = ConfirmRequest(
+                                    if (items.size == 1) "Delete this item?" else "Delete ${items.size} items?",
+                                    "They'll stay in Recently deleted for 30 days.",
+                                    "Delete",
+                                ) { doIt() }
+                            } else doIt()
+                        },
                     )
                 } else {
                     TabBar(
@@ -315,14 +346,16 @@ fun HomeScreen(
                             sheet = if (tab == HomeTab.Albums) HomeSheet.Sort else HomeSheet.Filter
                         },
                         filterActive = filter != MediaFilter.All,
+                        onLayoutAnchor = { layoutAnchor = it },
+                        onSecondaryAnchor = { secondaryAnchor = it },
                     )
                 }
             }
         }
 
-        // ---- Sheets ----
+        // ---- Pop-up menus anchored to the button that opened them ----
         val s = sheet
-        val options: List<SheetOption> = when (s) {
+        val popupOptions: List<SheetOption> = when (s) {
             HomeSheet.Filter -> MediaFilter.entries.map { f ->
                 SheetOption(f.label, selected = f == filter) { vm.filter.value = f }
             }
@@ -330,50 +363,88 @@ fun HomeScreen(
                 Triple(3, "Comfortable", Icons.Outlined.ViewComfy),
                 Triple(4, "Standard", Icons.Outlined.GridView),
                 Triple(5, "Compact", Icons.Outlined.ViewModule),
-                Triple(6, "By month", Icons.Outlined.ViewModule),
+                Triple(6, "By month", Icons.Outlined.CalendarMonth),
             ).map { (n, label, icon) ->
-                SheetOption(label, icon = icon, selected = columns == n, subtitle = "$n per row") { vm.setColumns(n) }
+                SheetOption(label, icon = icon, selected = columns == n) { vm.setColumns(n) }
             }
             HomeSheet.Sort -> AlbumSort.entries.map { so ->
                 SheetOption(so.label, selected = so == albumSort) { vm.setAlbumSort(so) }
             }
             HomeSheet.More -> buildList {
-                if (tab == HomeTab.Photos) add(SheetOption("Select", Icons.Outlined.Checklist) { selectionMode = true })
                 add(SheetOption("Recently deleted", Icons.Outlined.AutoDelete) { onOpenTrash() })
+                add(SheetOption("Check for updates", Icons.Outlined.SystemUpdate) { vm.checkForUpdates(manual = true) })
                 if (!canManage) {
-                    add(
-                        SheetOption(
-                            "Skip confirmation pop-ups",
-                            Icons.Outlined.VerifiedUser,
-                            subtitle = "Allow Gallery to manage media",
-                        ) { requestManageMedia(context) }
-                    )
+                    add(SheetOption("Skip pop-ups", Icons.Outlined.VerifiedUser, subtitle = "Manage media access") {
+                        requestManageMedia(context)
+                    })
                 }
                 add(SheetOption("Refresh", Icons.Outlined.Refresh) { vm.scheduleRefresh(0) })
             }
-            is HomeSheet.AlbumMenu -> listOf(
-                SheetOption(if (s.album.pinned) "Unpin from top" else "Pin to top", Icons.Outlined.PushPin) {
-                    vm.togglePin(s.album.key)
-                },
-                SheetOption("Open", Icons.Outlined.PhotoLibrary) { onOpenAlbum(s.album.key) },
-            )
-            null -> emptyList()
+            else -> emptyList()
         }
-        val title = when (s) {
-            HomeSheet.Filter -> "Show"
-            HomeSheet.Layout -> "Layout"
-            HomeSheet.Sort -> "Sort albums by"
-            HomeSheet.More -> null
-            is HomeSheet.AlbumMenu -> s.album.name
-            null -> null
-        }
-        GlassActionSheet(
-            visible = s != null,
+        val popupVisible = s == HomeSheet.Filter || s == HomeSheet.Layout || s == HomeSheet.Sort || s == HomeSheet.More
+        var lastPopup by remember { mutableStateOf<HomeSheet?>(null) }
+        if (popupVisible) lastPopup = s
+        val shown = if (popupVisible) s else lastPopup
+        GlassPopupMenu(
+            visible = popupVisible,
             state = haze,
-            title = title,
-            options = options,
+            anchor = when (shown) {
+                HomeSheet.More -> moreAnchor
+                HomeSheet.Layout -> layoutAnchor
+                else -> secondaryAnchor
+            },
+            placement = when (shown) {
+                HomeSheet.More -> PopupAnchor.BelowEnd
+                HomeSheet.Layout -> PopupAnchor.AboveStart
+                else -> PopupAnchor.AboveEnd
+            },
+            options = popupOptions,
+            title = when (shown) {
+                HomeSheet.Filter -> "Show"
+                HomeSheet.Layout -> "Layout"
+                HomeSheet.Sort -> "Sort albums by"
+                else -> null
+            },
             onDismiss = { sheet = null },
         )
+
+        val albumMenu = s as? HomeSheet.AlbumMenu
+        GlassActionSheet(
+            visible = albumMenu != null,
+            state = haze,
+            title = albumMenu?.album?.name,
+            options = if (albumMenu == null) emptyList() else listOf(
+                SheetOption(if (albumMenu.album.pinned) "Unpin from top" else "Pin to top", Icons.Outlined.PushPin) {
+                    vm.togglePin(albumMenu.album.key)
+                },
+                SheetOption("Open", Icons.Outlined.PhotoLibrary) { onOpenAlbum(albumMenu.album.key) },
+            ),
+            onDismiss = { sheet = null },
+        )
+
+        GlassDialog(request = confirm, state = haze, onDismiss = { confirm = null })
+
+        UpdateDialog(
+            state = update,
+            haze = haze,
+            onUpdate = vm::startUpdate,
+            onDismiss = vm::dismissUpdate,
+        )
+
+        // ---- Full-screen photo viewer ----
+        val sess = session
+        if (sess != null) {
+            val viewerItems = remember(sess, byId) { sess.ids.mapNotNull { byId[it] } }
+            ViewerOverlay(
+                session = sess,
+                items = viewerItems,
+                grid = photosHandle,
+                vm = vm,
+                onCurrentChanged = { hiddenId = it },
+                onClosed = { session = null; hiddenId = null },
+            )
+        }
     }
 }
 
@@ -385,6 +456,8 @@ private fun TabBar(
     onLayout: () -> Unit,
     onSecondary: () -> Unit,
     filterActive: Boolean,
+    onLayoutAnchor: (Rect) -> Unit,
+    onSecondaryAnchor: (Rect) -> Unit,
 ) {
     val c = GalleryTheme.colors
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -394,7 +467,9 @@ private fun TabBar(
             exit = fadeOut() + scaleOut() + shrinkHorizontally(),
         ) {
             Row {
-                GlassIconButton(haze, Icons.Outlined.GridView, "Layout", size = 58.dp, onClick = onLayout)
+                Box(Modifier.onGloballyPositioned { onLayoutAnchor(it.boundsInRoot()) }) {
+                    GlassIconButton(haze, Icons.Outlined.GridView, "Layout", size = 58.dp, onClick = onLayout)
+                }
                 Spacer(Modifier.width(10.dp))
             }
         }
@@ -452,7 +527,7 @@ private fun TabBar(
         ) {
             Row {
                 Spacer(Modifier.width(10.dp))
-                Box {
+                Box(Modifier.onGloballyPositioned { onSecondaryAnchor(it.boundsInRoot()) }) {
                     GlassIconButton(
                         haze,
                         if (tab == HomeTab.Albums) Icons.AutoMirrored.Outlined.Sort else Icons.Outlined.FilterList,

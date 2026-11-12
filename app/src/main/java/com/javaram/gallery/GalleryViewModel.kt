@@ -14,6 +14,8 @@ import com.javaram.gallery.data.AlbumKeys
 import com.javaram.gallery.data.ExifDetails
 import com.javaram.gallery.data.Media
 import com.javaram.gallery.data.MediaRepository
+import com.javaram.gallery.update.UpdateInfo
+import com.javaram.gallery.update.Updater
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -25,6 +27,17 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+sealed interface UpdateState {
+    data object Idle : UpdateState
+    data object Checking : UpdateState
+    data object UpToDate : UpdateState
+    data class Available(val info: UpdateInfo) : UpdateState
+    data class NeedsPermission(val info: UpdateInfo) : UpdateState
+    data class Downloading(val info: UpdateInfo, val progress: Float) : UpdateState
+    data class Installing(val info: UpdateInfo) : UpdateState
+    data class Error(val message: String) : UpdateState
+}
 
 enum class MediaFilter(val label: String) {
     All("All items"), Photos("Photos only"), Videos("Videos only"), Favorites("Favourites")
@@ -71,12 +84,6 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         combine(_all, _albumSort, _pinned) { items, sort, pins -> buildAlbums(items, sort, pins) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** The list the full-screen viewer pages through. */
-    private val _viewerItems = MutableStateFlow<List<Media>>(emptyList())
-    val viewerItems: StateFlow<List<Media>> = _viewerItems.asStateFlow()
-    var viewerStartId: Long = -1L
-        private set
-
     private var started = false
     private var refreshJob: Job? = null
 
@@ -84,8 +91,52 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         override fun onChange(selfChange: Boolean) = scheduleRefresh()
     }
 
+    // --- In-app updates ---
+    private val _update = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    val update: StateFlow<UpdateState> = _update.asStateFlow()
+    private var checkedThisSession = false
+
+    fun checkForUpdates(manual: Boolean) {
+        if (!manual && checkedThisSession) return
+        checkedThisSession = true
+        viewModelScope.launch {
+            if (manual) _update.value = UpdateState.Checking
+            val info = runCatching { Updater.latest() }.getOrNull()
+            val installed = Updater.installedVersionCode(getApplication())
+            _update.value = when {
+                info != null && info.versionCode > installed -> UpdateState.Available(info)
+                manual && info == null -> UpdateState.Error("Couldn't reach GitHub. Check your connection.")
+                manual -> UpdateState.UpToDate
+                else -> UpdateState.Idle
+            }
+        }
+    }
+
+    fun startUpdate(info: UpdateInfo) {
+        val app = getApplication<Application>()
+        if (!Updater.canInstall(app)) {
+            Updater.openInstallPermission(app)
+            _update.value = UpdateState.NeedsPermission(info)
+            return
+        }
+        viewModelScope.launch {
+            _update.value = UpdateState.Downloading(info, 0f)
+            runCatching {
+                val file = Updater.download(app, info) { p -> _update.value = UpdateState.Downloading(info, p) }
+                _update.value = UpdateState.Installing(info)
+                Updater.install(app, file)
+            }.onFailure { _update.value = UpdateState.Error(it.message ?: "Update failed") }
+        }
+    }
+
+    fun dismissUpdate() { _update.value = UpdateState.Idle }
+
     fun start() {
         _canManage.value = repo.canManageMedia()
+        checkForUpdates(manual = false)
+        (_update.value as? UpdateState.NeedsPermission)?.let { pending ->
+            if (Updater.canInstall(getApplication())) startUpdate(pending.info)
+        }
         if (started) {
             scheduleRefresh(0)
             return
@@ -104,7 +155,6 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             val items = withContext(Dispatchers.IO) { repo.load(trashed = false) }
             _all.value = items
             _loaded.value = true
-            syncViewer(items)
             if (_trash.value.isNotEmpty() || trashLoaded) loadTrash()
         }
     }
@@ -115,21 +165,6 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _trash.value = withContext(Dispatchers.IO) { repo.load(trashed = true) }
         }
-    }
-
-    private fun syncViewer(items: List<Media>) {
-        if (_viewerItems.value.isEmpty()) return
-        val byId = items.associateBy { it.id }
-        _viewerItems.value = _viewerItems.value.mapNotNull { byId[it.id] }
-    }
-
-    fun openViewer(list: List<Media>, startId: Long) {
-        _viewerItems.value = list
-        viewerStartId = startId
-    }
-
-    fun removeFromViewer(ids: Set<Long>) {
-        _viewerItems.value = _viewerItems.value.filterNot { it.id in ids }
     }
 
     fun setColumns(value: Int) {

@@ -33,6 +33,7 @@ class MediaRepository(private val context: Context) {
         MediaStore.MediaColumns.RELATIVE_PATH,
         MediaStore.MediaColumns.IS_FAVORITE,
         MediaStore.MediaColumns.DATE_EXPIRES,
+        MediaStore.MediaColumns.ORIENTATION,
     )
 
     /** Loads every photo and video. When [trashed] is true, only items in the trash are returned. */
@@ -81,6 +82,7 @@ class MediaRepository(private val context: Context) {
         val pathCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
         val favCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_FAVORITE)
         val expCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_EXPIRES)
+        val oriCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.ORIENTATION)
 
         while (c.moveToNext()) {
             val id = c.getLong(idCol)
@@ -107,6 +109,7 @@ class MediaRepository(private val context: Context) {
                 relativePath = c.getString(pathCol) ?: "",
                 isFavorite = c.getInt(favCol) == 1,
                 dateExpires = c.getLong(expCol),
+                orientation = c.getInt(oriCol),
             )
         }
     }

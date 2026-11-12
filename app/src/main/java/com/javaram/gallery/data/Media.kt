@@ -23,7 +23,13 @@ data class Media(
     val isFavorite: Boolean,
     /** Epoch seconds when a trashed item will be removed for good (0 when not trashed). */
     val dateExpires: Long = 0L,
+    /** Clockwise rotation stored in EXIF (0, 90, 180, 270). */
+    val orientation: Int = 0,
 ) {
+    /** Width as the photo is displayed, after rotation. */
+    val displayWidth: Int get() = if (orientation == 90 || orientation == 270) height else width
+    val displayHeight: Int get() = if (orientation == 90 || orientation == 270) width else height
+
     val isVideo: Boolean get() = mimeType.startsWith("video")
     val isGif: Boolean get() = mimeType == "image/gif"
 }

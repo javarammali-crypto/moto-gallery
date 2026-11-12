@@ -152,6 +152,8 @@ fun MediaGrid(
     onOpen: (Media) -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
+    handle: GridHandle? = null,
+    hiddenId: Long? = null,
     onColumnsChange: ((Int) -> Unit)? = null,
     badge: ((Media) -> String?)? = null,
     header: (@Composable () -> Unit)? = null,
@@ -161,8 +163,12 @@ fun MediaGrid(
     val scope = rememberCoroutineScope()
     val entries = remember(items, group) { buildEntries(items, group) }
     val indexOf = remember(items) { HashMap<Long, Int>(items.size * 2).apply { items.forEachIndexed { i, m -> put(m.id, i) } } }
-    val cells = remember { HashMap<Long, LayoutCoordinates>() }
-    var gridCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+
+    if (handle != null) {
+        handle.state = state
+        handle.entries = entries
+        handle.headerCount = if (header != null) 1 else 0
+    }
 
     val currentSelection by rememberUpdatedState(selection)
     val currentMode by rememberUpdatedState(selectionMode)
@@ -172,33 +178,36 @@ fun MediaGrid(
     val onEnter by rememberUpdatedState(onEnterSelection)
     val onCols by rememberUpdatedState(onColumnsChange)
 
-    // Drag-to-select state
-    var anchor by remember { mutableStateOf(-1) }
-    var removing by remember { mutableStateOf(false) }
-    var base by remember { mutableStateOf(emptySet<Long>()) }
-    var lastPointer by remember { mutableStateOf(Offset.Unspecified) }
+    // Drag-to-select state (plain holders: no recomposition needed)
+    val drag = remember { DragSelect() }
     var autoScroll by remember { mutableFloatStateOf(0f) }
 
-    fun hit(window: Offset): Long? {
-        for ((id, c) in cells) {
-            if (c.isAttached && c.boundsInWindow().contains(window)) return id
+    fun hit(local: Offset): Long? {
+        for (info in state.layoutInfo.visibleItemsInfo) {
+            val id = info.key as? Long ?: continue
+            val x = info.offset.x
+            val y = info.offset.y
+            if (local.x >= x && local.x < x + info.size.width && local.y >= y && local.y < y + info.size.height) return id
         }
         return null
     }
 
-    fun dragTo(window: Offset) {
-        if (anchor < 0) return
-        val id = hit(window) ?: return
+    fun dragTo(local: Offset) {
+        if (drag.anchor < 0) return
+        val id = hit(local) ?: return
         val idx = indexOf[id] ?: return
+        if (idx == drag.lastIndex) return
+        drag.lastIndex = idx
         val list = currentItems
-        val range = (min(anchor, idx)..max(anchor, idx)).mapNotNull { list.getOrNull(it)?.id }
-        onSelect(if (removing) base - range.toSet() else base + range)
+        val range = (min(drag.anchor, idx)..max(drag.anchor, idx)).mapNotNull { list.getOrNull(it)?.id }
+        onSelect(if (drag.removing) drag.base - range.toSet() else drag.base + range)
     }
 
     LaunchedEffect(autoScroll != 0f) {
         while (autoScroll != 0f) {
             state.scrollBy(autoScroll)
-            if (lastPointer.isSpecified) dragTo(lastPointer)
+            drag.lastIndex = -1
+            if (drag.pointer.isSpecified) dragTo(drag.pointer)
             withFrameNanos { }
         }
     }
@@ -212,7 +221,7 @@ fun MediaGrid(
             verticalArrangement = Arrangement.spacedBy(2.dp),
             modifier = Modifier
                 .fillMaxSize()
-                .onGloballyPositioned { gridCoords = it }
+                .onGloballyPositioned { handle?.coords = it }
                 // Pinch with two fingers to change the number of columns.
                 .pointerInput(Unit) {
                     awaitEachGesture {
@@ -241,38 +250,33 @@ fun MediaGrid(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                         val ended = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                            while (true) {
+                            var result = false
+                            while (!result) {
                                 val ev = awaitPointerEvent(PointerEventPass.Initial)
-                                if (ev.changes.size > 1) return@withTimeoutOrNull true
-                                val c = ev.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull true
-                                if (!c.pressed || c.isConsumed) return@withTimeoutOrNull true
-                                if ((c.position - down.position).getDistance() > viewConfiguration.touchSlop) {
-                                    return@withTimeoutOrNull true
-                                }
+                                val c = ev.changes.firstOrNull { it.id == down.id }
+                                result = ev.changes.size > 1 || c == null || !c.pressed || c.isConsumed ||
+                                    (c.position - down.position).getDistance() > viewConfiguration.touchSlop
                             }
-                            @Suppress("UNREACHABLE_CODE")
                             true
                         }
                         if (ended != null) return@awaitEachGesture
-                        val coords = gridCoords ?: return@awaitEachGesture
-                        val startWindow = coords.localToWindow(down.position)
-                        val id = hit(startWindow) ?: return@awaitEachGesture
+                        val id = hit(down.position) ?: return@awaitEachGesture
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         if (!currentMode) onEnter()
-                        anchor = indexOf[id] ?: -1
-                        removing = id in currentSelection
-                        base = currentSelection
-                        lastPointer = startWindow
-                        dragTo(startWindow)
+                        drag.anchor = indexOf[id] ?: -1
+                        drag.lastIndex = -1
+                        drag.removing = currentMode && id in currentSelection
+                        drag.base = if (currentMode) currentSelection else emptySet()
+                        drag.pointer = down.position
+                        dragTo(down.position)
                         while (true) {
                             val ev = awaitPointerEvent(PointerEventPass.Initial)
                             val c = ev.changes.firstOrNull { it.id == down.id } ?: break
                             ev.changes.forEach { it.consume() }
                             if (!c.pressed) break
-                            val w = coords.localToWindow(c.position)
-                            lastPointer = w
-                            dragTo(w)
-                            val h = coords.size.height
+                            drag.pointer = c.position
+                            dragTo(c.position)
+                            val h = size.height
                             autoScroll = when {
                                 c.position.y < edge -> -((edge - c.position.y) / edge) * 28f
                                 c.position.y > h - edge -> ((c.position.y - (h - edge)) / edge) * 28f
@@ -280,8 +284,8 @@ fun MediaGrid(
                             }
                         }
                         autoScroll = 0f
-                        anchor = -1
-                        lastPointer = Offset.Unspecified
+                        drag.anchor = -1
+                        drag.pointer = Offset.Unspecified
                     }
                 },
         ) {
@@ -304,7 +308,6 @@ fun MediaGrid(
                         onToggleAll = { all ->
                             onSelectionChange(if (all) selection + e.ids else selection - e.ids.toSet())
                         },
-                        modifier = Modifier.animateItem(),
                     )
                     is MediaEntry -> {
                         val m = e.media
@@ -312,17 +315,14 @@ fun MediaGrid(
                             media = m,
                             selected = m.id in selection,
                             selectionMode = selectionMode,
+                            hidden = m.id == hiddenId,
                             badge = badge?.invoke(m),
-                            modifier = Modifier
-                                .animateItem(fadeInSpec = null, fadeOutSpec = null)
-                                .onGloballyPositioned { cells[m.id] = it },
                             onClick = {
                                 if (selectionMode) {
                                     onSelectionChange(if (m.id in selection) selection - m.id else selection + m.id)
                                 } else onOpen(m)
                             },
                         )
-                        DisposableEffect(m.id) { onDispose { cells.remove(m.id) } }
                     }
                 }
             }
@@ -342,6 +342,14 @@ fun MediaGrid(
             )
         }
     }
+}
+
+private class DragSelect {
+    var anchor = -1
+    var lastIndex = -1
+    var removing = false
+    var base: Set<Long> = emptySet()
+    var pointer: Offset = Offset.Unspecified
 }
 
 @Composable
@@ -383,6 +391,7 @@ fun MediaCell(
     selectionMode: Boolean,
     badge: String?,
     modifier: Modifier = Modifier,
+    hidden: Boolean = false,
     onClick: () -> Unit,
 ) {
     val c = GalleryTheme.colors
@@ -400,7 +409,7 @@ fun MediaCell(
         Box(
             Modifier
                 .fillMaxSize()
-                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .graphicsLayer { scaleX = scale; scaleY = scale; alpha = if (hidden) 0f else 1f }
                 .clip(if (corner > 0.5f) RoundedCornerShape(corner.dp) else RectangleShape)
                 .background(if (c.dark) Color(0xFF161618) else Color(0xFFE9E9EC))
         ) {
@@ -408,9 +417,7 @@ fun MediaCell(
                 model = media.thumb(),
                 contentDescription = null,
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                modifier = Modifier
-                    .sharedMedia(media.id)
-                    .fillMaxSize(),
+                modifier = Modifier.fillMaxSize(),
             )
             if (media.isVideo) {
                 Box(

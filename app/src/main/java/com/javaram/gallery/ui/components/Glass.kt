@@ -27,6 +27,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.background
+import androidx.compose.ui.layout.layout
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -249,5 +252,178 @@ private fun SheetRow(opt: SheetOption, onDismiss: () -> Unit) {
             }
         }
         if (opt.selected) Icon(Icons.Filled.Check, null, tint = Accent, modifier = Modifier.size(20.dp))
+    }
+}
+
+enum class PopupAnchor { BelowEnd, AboveStart, AboveEnd, AboveCenter }
+
+/**
+ * Small glass menu that pops out of the button that opened it ([anchor] is that
+ * button's bounds in root coordinates), scaling from the button's corner.
+ */
+@Composable
+fun GlassPopupMenu(
+    visible: Boolean,
+    state: HazeState,
+    anchor: androidx.compose.ui.geometry.Rect?,
+    placement: PopupAnchor,
+    options: List<SheetOption>,
+    onDismiss: () -> Unit,
+    title: String? = null,
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val gap = with(density) { 10.dp.roundToPx() }
+    val margin = with(density) { 12.dp.roundToPx() }
+    val origin = when (placement) {
+        PopupAnchor.BelowEnd -> androidx.compose.ui.graphics.TransformOrigin(1f, 0f)
+        PopupAnchor.AboveStart -> androidx.compose.ui.graphics.TransformOrigin(0f, 1f)
+        PopupAnchor.AboveEnd -> androidx.compose.ui.graphics.TransformOrigin(1f, 1f)
+        PopupAnchor.AboveCenter -> androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+    }
+    Box(Modifier.fillMaxSize()) {
+        if (visible) Box(Modifier.fillMaxSize().noRippleClickable(onDismiss))
+        AnimatedVisibility(
+            visible = visible && anchor != null,
+            modifier = Modifier.layout { measurable, constraints ->
+                val p = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+                val a = anchor ?: androidx.compose.ui.geometry.Rect.Zero
+                var x = when (placement) {
+                    PopupAnchor.BelowEnd, PopupAnchor.AboveEnd -> a.right.toInt() - p.width
+                    PopupAnchor.AboveStart -> a.left.toInt()
+                    PopupAnchor.AboveCenter -> (a.center.x - p.width / 2f).toInt()
+                }
+                var y = if (placement == PopupAnchor.BelowEnd) a.bottom.toInt() + gap else a.top.toInt() - gap - p.height
+                x = x.coerceIn(margin, (constraints.maxWidth - p.width - margin).coerceAtLeast(margin))
+                y = y.coerceIn(margin, (constraints.maxHeight - p.height - margin).coerceAtLeast(margin))
+                layout(constraints.maxWidth, constraints.maxHeight) { p.place(x, y) }
+            },
+            enter = scaleIn(
+                spring(dampingRatio = 0.72f, stiffness = 520f),
+                initialScale = 0.4f,
+                transformOrigin = origin,
+            ) + fadeIn(tween(140)),
+            exit = scaleOut(tween(160), targetScale = 0.6f, transformOrigin = origin) + fadeOut(tween(140)),
+        ) {
+            GlassSurface(
+                state = state,
+                modifier = Modifier.width(236.dp),
+                shape = RoundedCornerShape(24.dp),
+                contentAlignment = Alignment.TopStart,
+            ) {
+                Column(Modifier.padding(vertical = 6.dp)) {
+                    if (title != null) {
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = GalleryTheme.colors.secondary,
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+                        )
+                    }
+                    options.forEach { opt -> PopupRow(opt, onDismiss) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PopupRow(opt: SheetOption, onDismiss: () -> Unit) {
+    val c = GalleryTheme.colors
+    val color = when {
+        opt.destructive -> Color(0xFFFF453A)
+        opt.selected -> Accent
+        else -> c.content
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { onDismiss(); opt.onClick() }
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (opt.icon != null) {
+            Icon(opt.icon, null, tint = color, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(14.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(opt.label, color = color, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (opt.subtitle != null) Text(opt.subtitle, color = c.secondary, style = MaterialTheme.typography.bodySmall)
+        }
+        if (opt.selected) Icon(Icons.Filled.Check, null, tint = Accent, modifier = Modifier.size(18.dp))
+    }
+}
+
+data class ConfirmRequest(
+    val title: String,
+    val message: String,
+    val confirmLabel: String,
+    val destructive: Boolean = true,
+    val onConfirm: () -> Unit,
+)
+
+/** Centered glass confirmation dialog; the screen behind is blurred. */
+@Composable
+fun GlassDialog(request: ConfirmRequest?, state: HazeState, onDismiss: () -> Unit) {
+    val c = GalleryTheme.colors
+    // Keep the last request around so the exit animation still has text to show.
+    var last by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(request) }
+    if (request != null) last = request
+    val r = last
+    val visible = request != null
+    Box(Modifier.fillMaxSize()) {
+        AnimatedVisibility(visible, enter = fadeIn(tween(200)), exit = fadeOut(tween(180))) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .hazeChild(state, glassStyle(blur = 18.dp, tint = Color.Black.copy(alpha = 0.28f)))
+                    .noRippleClickable(onDismiss)
+            )
+        }
+        AnimatedVisibility(
+            visible = visible && r != null,
+            modifier = Modifier.align(Alignment.Center),
+            enter = scaleIn(spring(dampingRatio = 0.7f, stiffness = 500f), initialScale = 0.8f) + fadeIn(tween(150)),
+            exit = scaleOut(tween(150), targetScale = 0.9f) + fadeOut(tween(150)),
+        ) {
+            if (r == null) return@AnimatedVisibility
+            GlassSurface(
+                state = state,
+                modifier = Modifier.padding(horizontal = 36.dp).fillMaxWidth(),
+                shape = RoundedCornerShape(30.dp),
+            ) {
+                Column(
+                    Modifier.padding(top = 24.dp, start = 22.dp, end = 22.dp, bottom = 18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(r.title, style = MaterialTheme.typography.titleMedium, color = c.content)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        r.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = c.secondary,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .background(c.glassHighlight, CircleShape)
+                                .pressable(onClick = onDismiss),
+                            contentAlignment = Alignment.Center,
+                        ) { Text("Cancel", style = MaterialTheme.typography.titleSmall, color = c.content) }
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .background(if (r.destructive) Color(0xFFFF453A) else Accent, CircleShape)
+                                .pressable { onDismiss(); r.onConfirm() },
+                            contentAlignment = Alignment.Center,
+                        ) { Text(r.confirmLabel, style = MaterialTheme.typography.titleSmall, color = Color.White) }
+                    }
+                }
+            }
+        }
     }
 }

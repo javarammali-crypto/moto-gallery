@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.javaram.gallery.MediaFilter
 import com.javaram.gallery.data.Media
+import com.javaram.gallery.ui.components.GridHandle
 import com.javaram.gallery.ui.components.GroupMode
 import com.javaram.gallery.ui.components.MediaGrid
 import com.javaram.gallery.ui.theme.Accent
@@ -38,6 +39,8 @@ fun PhotosTab(
     loaded: Boolean,
     columns: Int,
     state: LazyGridState,
+    handle: GridHandle,
+    hiddenId: Long?,
     selection: Set<Long>,
     selectionMode: Boolean,
     onSelectionChange: (Set<Long>) -> Unit,
@@ -87,6 +90,8 @@ fun PhotosTab(
         columns = columns,
         group = if (columns >= 6) GroupMode.Month else GroupMode.Day,
         state = state,
+        handle = handle,
+        hiddenId = hiddenId,
         selection = selection,
         selectionMode = selectionMode,
         onSelectionChange = onSelectionChange,

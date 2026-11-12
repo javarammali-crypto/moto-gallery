@@ -48,7 +48,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.javaram.gallery.GalleryViewModel
 import com.javaram.gallery.data.Media
+import com.javaram.gallery.ui.components.ConfirmRequest
+import com.javaram.gallery.ui.components.GlassDialog
 import com.javaram.gallery.ui.components.GlassIconButton
+import com.javaram.gallery.ui.components.GridHandle
+import com.javaram.gallery.ui.viewer.ViewerOverlay
+import com.javaram.gallery.ui.viewer.ViewerSession
 import com.javaram.gallery.ui.components.GroupMode
 import com.javaram.gallery.ui.components.MediaGrid
 import com.javaram.gallery.ui.components.ProgressiveGlass
@@ -66,7 +71,6 @@ fun AlbumScreen(
     vm: GalleryViewModel,
     albumKey: String,
     onBack: () -> Unit,
-    onOpen: (List<Media>, Media) -> Unit,
 ) {
     val context = LocalContext.current
     val haze = remember { HazeState() }
@@ -78,6 +82,12 @@ fun AlbumScreen(
     var selectionMode by rememberSaveable { mutableStateOf(false) }
     var selection by remember { mutableStateOf(emptySet<Long>()) }
     var grouped by rememberSaveable { mutableStateOf(false) }
+    var session by remember { mutableStateOf<ViewerSession?>(null) }
+    var hiddenId by remember { mutableStateOf<Long?>(null) }
+    var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
+    val handle = remember { GridHandle() }
+    val canManage by vm.canManageMedia.collectAsStateWithLifecycle()
+    val byId = remember(all) { all.associateBy { it.id } }
 
     fun exitSelection() { selectionMode = false; selection = emptySet() }
     BackHandler(selectionMode) { exitSelection() }
@@ -95,11 +105,13 @@ fun AlbumScreen(
                 columns = columns,
                 group = if (grouped) GroupMode.Day else GroupMode.None,
                 state = state,
+                handle = handle,
+                hiddenId = hiddenId,
                 selection = selection,
                 selectionMode = selectionMode,
                 onSelectionChange = { selection = it },
                 onEnterSelection = { selectionMode = true },
-                onOpen = { onOpen(items, it) },
+                onOpen = { m -> session = ViewerSession(items.map { it.id }, m.id) },
                 contentPadding = PaddingValues(bottom = bottom),
                 onColumnsChange = vm::setColumns,
                 header = {
@@ -158,7 +170,32 @@ fun AlbumScreen(
                 allFavorite = allFav,
                 onShare = { shareMedia(context, selectedItems) },
                 onFavorite = { request(vm.favoriteRequest(selectedItems, !allFav)) },
-                onDelete = { request(vm.trashRequest(selectedItems)) },
+                onDelete = {
+                    val targets = selectedItems
+                    val doIt = { request(vm.trashRequest(targets)) }
+                    if (canManage) {
+                        confirm = ConfirmRequest(
+                            if (targets.size == 1) "Delete this item?" else "Delete ${targets.size} items?",
+                            "They'll stay in Recently deleted for 30 days.",
+                            "Delete",
+                        ) { doIt() }
+                    } else doIt()
+                },
+            )
+        }
+
+        GlassDialog(request = confirm, state = haze, onDismiss = { confirm = null })
+
+        val sess = session
+        if (sess != null) {
+            val viewerItems = remember(sess, byId) { sess.ids.mapNotNull { byId[it] } }
+            ViewerOverlay(
+                session = sess,
+                items = viewerItems,
+                grid = handle,
+                vm = vm,
+                onCurrentChanged = { hiddenId = it },
+                onClosed = { session = null; hiddenId = null },
             )
         }
     }

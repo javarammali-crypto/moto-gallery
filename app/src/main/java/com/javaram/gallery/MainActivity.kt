@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        preferHighRefreshRate()
         readIntent(intent)
         hasAccess = checkAccess()
         setContent {
@@ -63,6 +64,18 @@ class MainActivity : ComponentActivity() {
         hasAccess = checkAccess()
         if (hasAccess) vm.start()
         vm.refreshManagePermission()
+    }
+
+    /** Ask for the panel's fastest mode (120 Hz on the Edge 70 Fusion) instead of the 60 Hz default. */
+    private fun preferHighRefreshRate() {
+        runCatching {
+            val d = display ?: return
+            val cur = d.mode
+            val best = d.supportedModes
+                .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
+                .maxByOrNull { it.refreshRate } ?: return
+            window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+        }
     }
 
     private fun readIntent(intent: Intent?) {
