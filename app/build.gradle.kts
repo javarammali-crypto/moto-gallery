@@ -86,4 +86,10 @@ dependencies {
 
     implementation("androidx.media3:media3-exoplayer:1.5.0")
     implementation("androidx.media3:media3-ui:1.5.0")
+
+    // Phase 2: on-device search
+    implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 }

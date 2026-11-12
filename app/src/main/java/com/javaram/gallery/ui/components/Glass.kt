@@ -61,13 +61,13 @@ import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeChild
 
 @Composable
-fun glassStyle(blur: Dp = 28.dp, tint: Color? = null): HazeStyle {
+fun glassStyle(blur: Dp = 34.dp, tint: Color? = null): HazeStyle {
     val c = GalleryTheme.colors
     return HazeStyle(
         backgroundColor = c.background,
         tints = listOf(HazeTint(tint ?: c.glassTint)),
         blurRadius = blur,
-        noiseFactor = 0.06f,
+        noiseFactor = 0.035f,
     )
 }
 
@@ -78,7 +78,7 @@ fun GlassSurface(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(28.dp),
     tint: Color? = null,
-    blur: Dp = 28.dp,
+    blur: Dp = 34.dp,
     border: Boolean = true,
     contentAlignment: Alignment = Alignment.Center,
     content: @Composable BoxScope.() -> Unit,
@@ -88,10 +88,22 @@ fun GlassSurface(
     var m = modifier
         .clip(shape)
         .hazeChild(state, style)
+    // Specular sheen: a soft light falling across the top of the glass, like iOS / ColorOS 17.
+    m = m.background(
+        Brush.verticalGradient(
+            0f to Color.White.copy(alpha = if (c.dark) 0.10f else 0.26f),
+            0.45f to Color.White.copy(alpha = if (c.dark) 0.02f else 0.05f),
+            1f to Color.Transparent,
+        )
+    )
     if (border) {
         m = m.border(
-            width = 0.8.dp,
-            brush = Brush.verticalGradient(listOf(c.glassBorderTop, c.glassBorderBottom)),
+            width = 0.9.dp,
+            brush = Brush.linearGradient(
+                0f to c.glassBorderTop,
+                0.5f to c.glassBorderBottom,
+                1f to c.glassBorderTop.copy(alpha = c.glassBorderTop.alpha * 0.45f),
+            ),
             shape = shape,
         )
     }

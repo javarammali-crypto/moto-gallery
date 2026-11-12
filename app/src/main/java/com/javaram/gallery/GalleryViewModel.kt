@@ -14,6 +14,10 @@ import com.javaram.gallery.data.AlbumKeys
 import com.javaram.gallery.data.ExifDetails
 import com.javaram.gallery.data.Media
 import com.javaram.gallery.data.MediaRepository
+import com.javaram.gallery.search.IndexEntry
+import com.javaram.gallery.search.IndexProgress
+import com.javaram.gallery.search.Indexer
+import com.javaram.gallery.search.SearchIndex
 import com.javaram.gallery.update.UpdateInfo
 import com.javaram.gallery.update.Updater
 import kotlinx.coroutines.Dispatchers
@@ -155,6 +159,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             val items = withContext(Dispatchers.IO) { repo.load(trashed = false) }
             _all.value = items
             _loaded.value = true
+            startIndexing(items)
             if (_trash.value.isNotEmpty() || trashLoaded) loadTrash()
         }
     }
@@ -165,6 +170,49 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _trash.value = withContext(Dispatchers.IO) { repo.load(trashed = true) }
         }
+    }
+
+    // --- Search index ---
+    val indexProgress: StateFlow<IndexProgress> = Indexer.progress
+    private val _index = MutableStateFlow<Map<Long, IndexEntry>>(emptyMap())
+    val index: StateFlow<Map<Long, IndexEntry>> = _index.asStateFlow()
+    private var indexJob: Job? = null
+    private var indexWatch: Job? = null
+
+    private fun startIndexing(items: List<Media>) {
+        if (indexWatch == null) {
+            indexWatch = viewModelScope.launch {
+                Indexer.generation.collect {
+                    _index.value = withContext(Dispatchers.IO) { SearchIndex.get(getApplication()).all() }
+                }
+            }
+        }
+        if (indexJob?.isActive == true) return
+        indexJob = viewModelScope.launch {
+            Indexer.run(getApplication(), items)
+        }
+    }
+
+    fun reloadIndex() {
+        viewModelScope.launch { _index.value = withContext(Dispatchers.IO) { SearchIndex.get(getApplication()).all() } }
+    }
+
+    private val _recent = MutableStateFlow(
+        prefs.getString("recentSearches", "")!!.split('\n').filter { it.isNotBlank() }
+    )
+    val recentSearches: StateFlow<List<String>> = _recent.asStateFlow()
+
+    fun addRecentSearch(q: String) {
+        val t = q.trim()
+        if (t.length < 2) return
+        val next = (listOf(t) + _recent.value.filterNot { it.equals(t, true) }).take(8)
+        _recent.value = next
+        prefs.edit().putString("recentSearches", next.joinToString("\n")).apply()
+    }
+
+    fun clearRecentSearches() {
+        _recent.value = emptyList()
+        prefs.edit().remove("recentSearches").apply()
     }
 
     fun setColumns(value: Int) {

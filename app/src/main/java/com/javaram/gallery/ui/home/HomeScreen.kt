@@ -92,6 +92,7 @@ import com.javaram.gallery.ui.components.requestManageMedia
 import com.javaram.gallery.ui.components.shareMedia
 import com.javaram.gallery.ui.theme.GalleryTheme
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
@@ -126,6 +127,7 @@ fun HomeScreen(
     vm: GalleryViewModel,
     onOpenAlbum: (String) -> Unit,
     onOpenTrash: () -> Unit,
+    onOpenSearch: () -> Unit,
 ) {
     val context = LocalContext.current
     val haze = remember { HazeState() }
@@ -288,6 +290,10 @@ fun HomeScreen(
                             modifier = Modifier.padding(start = 6.dp),
                         )
                     }
+                }
+                if (tab != HomeTab.Create) {
+                    GlassIconButton(haze, Icons.Outlined.Search, "Search", size = 42.dp, onClick = onOpenSearch)
+                    Spacer(Modifier.width(10.dp))
                 }
                 if (tab == HomeTab.Photos) {
                     GlassIconButton(haze, Icons.Outlined.Checklist, "Select", size = 42.dp) { selectionMode = true }

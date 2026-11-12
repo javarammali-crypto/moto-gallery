@@ -15,7 +15,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
+import androidx.navigation.navArgument
+import com.javaram.gallery.ui.search.PlacesMapScreen
+import com.javaram.gallery.ui.search.SearchScreen
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.javaram.gallery.GalleryViewModel
@@ -28,7 +32,10 @@ object Routes {
     const val HOME = "home"
     const val ALBUM = "album/{key}"
     const val TRASH = "trash"
+    const val SEARCH = "search?q={q}"
+    const val MAP = "map"
     fun album(key: String) = "album/$key"
+    fun search(q: String = "") = "search?q=" + android.net.Uri.encode(q)
 }
 
 @Composable
@@ -50,6 +57,7 @@ fun GalleryNav(vm: GalleryViewModel) {
                     vm = vm,
                     onOpenAlbum = { key -> nav.navigate(Routes.album(key)) },
                     onOpenTrash = { nav.navigate(Routes.TRASH) },
+                    onOpenSearch = { nav.navigate(Routes.search()) },
                 )
             }
             composable(Routes.ALBUM) { entry ->
@@ -58,6 +66,24 @@ fun GalleryNav(vm: GalleryViewModel) {
             }
             composable(Routes.TRASH) {
                 TrashScreen(vm = vm, onBack = { nav.popBackStack() })
+            }
+            composable(
+                Routes.SEARCH,
+                arguments = listOf(navArgument("q") { type = NavType.StringType; defaultValue = "" }),
+            ) { entry ->
+                SearchScreen(
+                    vm = vm,
+                    initialQuery = entry.arguments?.getString("q") ?: "",
+                    onBack = { nav.popBackStack() },
+                    onOpenMap = { nav.navigate(Routes.MAP) },
+                )
+            }
+            composable(Routes.MAP) {
+                PlacesMapScreen(
+                    vm = vm,
+                    onBack = { nav.popBackStack() },
+                    onPlace = { place -> nav.navigate(Routes.search(place)) },
+                )
             }
         }
     }

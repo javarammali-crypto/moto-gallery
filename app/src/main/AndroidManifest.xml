@@ -53,6 +53,11 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
+        <!-- Ask Play services to fetch the on-device labeling and text models at install time -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="ica,ocr" />
+
         <receiver
             android:name=".update.UpdateReceiver"
             android:exported="false" />

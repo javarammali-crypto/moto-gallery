@@ -8,6 +8,18 @@ import com.javaram.gallery.data.ThumbFetcher
 import com.javaram.gallery.data.ThumbKeyer
 
 class GalleryApplication : Application(), ImageLoaderFactory {
+    override fun onCreate() {
+        super.onCreate()
+        runCatching { com.javaram.gallery.search.IndexWorker.schedule(this) }
+        runCatching {
+            org.osmdroid.config.Configuration.getInstance().apply {
+                userAgentValue = packageName
+                osmdroidBasePath = java.io.File(cacheDir, "osmdroid")
+                osmdroidTileCache = java.io.File(cacheDir, "osmdroid/tiles")
+            }
+        }
+    }
+
     override fun newImageLoader(): ImageLoader =
         ImageLoader.Builder(this)
             .components {

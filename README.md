@@ -16,8 +16,14 @@ A personal Android gallery app for the Moto Edge 70 Fusion, styled after the Col
 - Recently deleted: Android's 30-day trash with restore and delete forever
 - Opens photos and videos from other apps
 
+## Phase 2
+- Search by date ("march 2024", "last week", "12 jan"), place, things in photos (food, dog, beach…), text inside photos, album and file names
+- Places map with photo pins (OpenStreetMap)
+- On-device analysis with ML Kit; continues in the background while charging
+- Clearer glass with stronger blur and a specular edge
+- In-app updates from GitHub Releases
+
 ## Coming next
-2. Search by date, place (map), objects and text in photos
 3. People: face grouping and naming
 4. Editor: crop, adjust, filters, background removal
 5. Private safe, cleanup, collage, memories
