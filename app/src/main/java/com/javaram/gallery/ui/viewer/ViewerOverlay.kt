@@ -182,6 +182,7 @@ fun ViewerOverlay(
         var moreAnchor by remember { mutableStateOf<Rect?>(null) }
         var showMore by remember { mutableStateOf(false) }
         var wallpaperFor by remember { mutableStateOf<Media?>(null) }
+        var editing by remember { mutableStateOf<Media?>(null) }
         var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
         val zoomStates = remember { mutableStateMapOf<Long, ZoomableImageState>() }
 
@@ -527,8 +528,8 @@ fun ViewerOverlay(
                                 tint = if (m.isFavorite) Color(0xFFFF3D5A) else c.content,
                             )
                         }
-                        BarAction(Icons.Outlined.Edit, "Edit", true, {
-                            toast(context, "The photo editor arrives in a later update")
+                        BarAction(Icons.Outlined.Edit, "Edit", !m.isVideo, {
+                            if (!m.isVideo) editing = m
                         })
                         BarAction(Icons.Outlined.DeleteOutline, "Delete", true, {
                             val doIt = { request(vm.trashRequest(listOf(m))) }
@@ -592,6 +593,11 @@ fun ViewerOverlay(
         )
 
         GlassDialog(request = confirm, state = haze, onDismiss = { confirm = null })
+
+        val ed = editing
+        if (ed != null) {
+            com.javaram.gallery.ui.editor.EditorOverlay(media = ed, vm = vm, onClose = { editing = null })
+        }
     }
 }
 

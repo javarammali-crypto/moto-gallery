@@ -98,4 +98,7 @@ dependencies {
     // Phase 3: people
     implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
+
+    // Phase 4: editor background removal
+    implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
 }

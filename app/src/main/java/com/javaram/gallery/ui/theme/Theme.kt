@@ -36,23 +36,23 @@ private val LightGallery = GalleryColors(
     background = Color(0xFFF7F7F8),
     content = Color(0xFF111114),
     secondary = Color(0xFF6E6E76),
-    glassTint = Color(0x38FFFFFF),
+    glassTint = Color(0x27FFFFFF),
     glassBorderTop = Color(0xF2FFFFFF),
     glassBorderBottom = Color(0x26FFFFFF),
-    glassHighlight = Color(0x80FFFFFF),
+    glassHighlight = Color(0x5AFFFFFF),
     card = Color(0xFFFFFFFF),
     divider = Color(0x14000000),
 )
 
-private val DarkGallery = GalleryColors(
+val DarkGallery = GalleryColors(
     dark = true,
     background = Color(0xFF000000),
     content = Color(0xFFF4F4F6),
     secondary = Color(0xFF9A9AA2),
-    glassTint = Color(0x2E1C1C20),
+    glassTint = Color(0x201C1C20),
     glassBorderTop = Color(0x59FFFFFF),
     glassBorderBottom = Color(0x0AFFFFFF),
-    glassHighlight = Color(0x24FFFFFF),
+    glassHighlight = Color(0x19FFFFFF),
     card = Color(0xFF1A1A1D),
     divider = Color(0x1FFFFFFF),
 )

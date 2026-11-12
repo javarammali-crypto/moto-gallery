@@ -91,8 +91,8 @@ fun GlassSurface(
     // Specular sheen: a soft light falling across the top of the glass, like iOS / ColorOS 17.
     m = m.background(
         Brush.verticalGradient(
-            0f to Color.White.copy(alpha = if (c.dark) 0.10f else 0.26f),
-            0.45f to Color.White.copy(alpha = if (c.dark) 0.02f else 0.05f),
+            0f to Color.White.copy(alpha = if (c.dark) 0.07f else 0.18f),
+            0.45f to Color.White.copy(alpha = if (c.dark) 0.014f else 0.035f),
             1f to Color.Transparent,
         )
     )
