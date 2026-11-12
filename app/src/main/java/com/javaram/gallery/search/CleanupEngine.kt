@@ -53,7 +53,7 @@ data class CleanupReport(
 object CleanupEngine {
     private const val SIMILAR_BITS = 8
     private const val SIMILAR_WINDOW_MS = 3 * 60_000L
-    const val BLUR_LIMIT = 28f
+    const val BLUR_LIMIT = 50f
 
     private fun isScreenshot(m: Media) =
         m.bucketName.contains("screenshot", true) || m.relativePath.contains("screenshot", true)

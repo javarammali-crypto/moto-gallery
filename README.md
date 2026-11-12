@@ -29,8 +29,12 @@ A personal Android gallery app for the Moto Edge 70 Fusion, styled after the Col
 - Set any photo as home, lock or both wallpapers
 - Back from a search result returns to the search page
 
-## Coming next
-4. Editor: crop, adjust, filters, background removal
-5. Private safe, cleanup, collage, memories
+## Phase 4 & 5
+- Photo editor: crop/rotate/flip/straighten, light and colour adjustments, 12 filters with strength, on-device background removal/replace; save as copy or replace original (date and location kept)
+- Private safe: AES-encrypted with an Android Keystore key, unlocked by fingerprint/PIN, locks when you leave the app
+- Cleanup: duplicates, similar shots, blurry photos, large videos, old screenshots
+- Collage maker (2–9 photos, layouts, ratios, spacing, corners, background)
+- Memories (on this day, trips, people, last 30 days, last year) with a story-style slideshow
+- Glass 30% more transparent
 
 Builds run on GitHub Actions (`.github/workflows/build.yml`).
