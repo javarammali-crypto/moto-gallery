@@ -16,6 +16,8 @@ android {
         targetSdk = 35
         versionCode = buildNumber
         versionName = "0.1.$buildNumber"
+        // The Edge 70 Fusion is 64-bit ARM; skipping other CPU types keeps updates small.
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     signingConfigs {
