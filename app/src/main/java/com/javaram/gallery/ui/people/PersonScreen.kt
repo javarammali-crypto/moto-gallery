@@ -31,7 +31,10 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PersonRemove
@@ -59,7 +62,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.javaram.gallery.GalleryViewModel
 import com.javaram.gallery.ui.components.ConfirmRequest
+import com.javaram.gallery.ui.components.GlassActionSheet
 import com.javaram.gallery.ui.components.GlassDialog
+import com.javaram.gallery.ui.components.toast
 import com.javaram.gallery.ui.components.GlassIconButton
 import com.javaram.gallery.ui.components.GlassPopupMenu
 import com.javaram.gallery.ui.components.GlassSurface
@@ -102,6 +107,12 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
     var showMore by remember { mutableStateOf(false) }
     var merging by remember { mutableStateOf(false) }
+    // "Not them" flow: the photos being moved, and which step is open.
+    var moving by remember { mutableStateOf(emptySet<Long>()) }
+    var moveSheet by remember { mutableStateOf(false) }
+    var movePicker by remember { mutableStateOf(false) }
+    var newPerson by remember { mutableStateOf(false) }
+    var coverPick by remember { mutableStateOf(false) }
     var moreAnchor by remember { mutableStateOf<Rect?>(null) }
     var session by remember { mutableStateOf<ViewerSession?>(null) }
     var hiddenId by remember { mutableStateOf<Long?>(null) }
@@ -113,6 +124,8 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
     fun exitSelection() { selectionMode = false; selection = emptySet() }
     BackHandler(selectionMode) { exitSelection() }
     BackHandler(merging) { merging = false }
+    BackHandler(coverPick) { coverPick = false }
+    BackHandler(moveSheet || movePicker || newPerson) { moveSheet = false; movePicker = false; newPerson = false }
     val request = rememberMediaRequest { ok -> if (ok) exitSelection(); vm.scheduleRefresh(0) }
     val selected = remember(selection, items) { items.filter { it.id in selection } }
     val title = person?.name ?: "Add name"
@@ -130,7 +143,13 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
                 selectionMode = selectionMode,
                 onSelectionChange = { selection = it },
                 onEnterSelection = { selectionMode = true },
-                onOpen = { m -> session = ViewerSession(items.map { it.id }, m.id) },
+                onOpen = { m ->
+                    if (coverPick) {
+                        coverPick = false
+                        vm.setPersonCover(personId, m.id)
+                        toast(context, "Cover photo updated")
+                    } else session = ViewerSession(items.map { it.id }, m.id)
+                },
                 contentPadding = PaddingValues(bottom = bottom),
                 onColumnsChange = vm::setColumns,
                 header = {
@@ -165,7 +184,16 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
             Modifier.statusBarsPadding().fillMaxWidth().height(60.dp).padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (selectionMode) {
+            if (coverPick) {
+                GlassIconButton(haze, Icons.Filled.Close, "Cancel", size = 42.dp) { coverPick = false }
+                GlassSurface(haze, Modifier.padding(start = 10.dp).height(42.dp), shape = CircleShape) {
+                    Text(
+                        "Tap a photo to use as cover",
+                        style = MaterialTheme.typography.titleSmall, color = c.content,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
+            } else if (selectionMode) {
                 GlassIconButton(haze, Icons.Filled.Close, "Cancel", size = 42.dp) { exitSelection() }
                 Text(
                     if (selection.isEmpty()) "Select items" else "${selection.size} selected",
@@ -197,15 +225,13 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
                 Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     val enabled = selection.isNotEmpty()
                     BarAction(Icons.Outlined.PersonRemove, "Not them", enabled, {
-                        confirm = ConfirmRequest(
-                            "Remove from ${person?.name ?: "this person"}?",
-                            "These ${selection.size} photos won't be grouped with this person any more. The photos aren't deleted.",
-                            "Remove",
-                            destructive = false,
-                        ) {
-                            vm.removeFromPerson(personId, selection)
-                            exitSelection()
-                        }
+                        moving = selection
+                        moveSheet = true
+                    })
+                    BarAction(Icons.Outlined.AccountCircle, "Cover", selection.size == 1, {
+                        selection.firstOrNull()?.let { vm.setPersonCover(personId, it) }
+                        toast(context, "Cover photo updated")
+                        exitSelection()
                     })
                     BarAction(Icons.Outlined.Share, "Share", enabled, { shareMedia(context, selected) })
                     BarAction(Icons.Outlined.DeleteOutline, "Delete", enabled, {
@@ -231,6 +257,7 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
             options = listOf(
                 SheetOption(if (person?.name == null) "Add name" else "Rename", Icons.Outlined.Edit) { naming = true },
                 SheetOption("Merge with…", Icons.Outlined.GroupAdd) { merging = true },
+                SheetOption("Change cover photo", Icons.Outlined.AccountCircle) { coverPick = true },
                 SheetOption(
                     if (person?.hidden == true) "Show this person" else "Hide this person",
                     if (person?.hidden == true) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
@@ -252,8 +279,69 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
                 if (person != null) saveName(vm, person, text) { confirm = it }
             },
         )
+        // ---- "Not them" options ----
+        val who = person?.name ?: "this person"
+        val n = moving.size
+        GlassActionSheet(
+            visible = moveSheet,
+            state = haze,
+            title = if (n == 1) "This photo isn't $who" else "These $n photos aren't $who",
+            options = listOf(
+                SheetOption("Move to someone else", Icons.Outlined.SwapHoriz, subtitle = "Pick the right person") {
+                    movePicker = true
+                },
+                SheetOption("Move to a new person", Icons.Outlined.PersonAdd, subtitle = "Start a new group with these") {
+                    newPerson = true
+                },
+                SheetOption("Just remove from $who", Icons.Outlined.PersonRemove, subtitle = "Photos aren't deleted") {
+                    vm.removeFromPerson(personId, moving)
+                    exitSelection()
+                    toast(context, "Removed from $who")
+                },
+            ),
+            onDismiss = { moveSheet = false },
+        )
+        MergePicker(
+            visible = movePicker,
+            haze = haze,
+            title = "Move to…",
+            people = people.filter { it.id != personId && !it.hidden && (it.name != null || it.count >= MIN_PERSON_PHOTOS) },
+            byId = byId,
+            onDismiss = { movePicker = false },
+            onPick = { other ->
+                movePicker = false
+                val ids = moving
+                vm.moveToPerson(personId, ids, other.id)
+                exitSelection()
+                toast(context, "Moved ${ids.size} to ${other.name ?: "the selected person"}")
+            },
+        )
+        NameDialog(
+            visible = newPerson,
+            haze = haze,
+            initial = "",
+            title = "Name the new person",
+            allowEmpty = true,
+            onDismiss = { newPerson = false },
+            onSave = { text ->
+                newPerson = false
+                val ids = moving
+                val clean = text.trim().ifEmpty { null }
+                val existing = clean?.let { vm.personWithName(it, personId) }
+                if (existing != null) {
+                    vm.moveToPerson(personId, ids, existing.id)
+                    toast(context, "Moved ${ids.size} to ${existing.name}")
+                } else {
+                    vm.moveToNewPerson(personId, ids, clean)
+                    toast(context, "Moved ${ids.size} to ${clean ?: "a new person"}")
+                }
+                exitSelection()
+            },
+        )
+
         MergePicker(
             visible = merging,
+            title = "Merge with…",
             haze = haze,
             people = people.filter { it.id != personId && !it.hidden && (it.name != null || it.count >= MIN_PERSON_PHOTOS) },
             byId = byId,
@@ -291,6 +379,7 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
 private fun MergePicker(
     visible: Boolean,
     haze: HazeState,
+    title: String,
     people: List<com.javaram.gallery.search.Person>,
     byId: Map<Long, com.javaram.gallery.data.Media>,
     onDismiss: () -> Unit,
@@ -320,7 +409,7 @@ private fun MergePicker(
             ) {
                 Column(Modifier.padding(top = 18.dp)) {
                     Text(
-                        "Merge with…",
+                        title,
                         style = MaterialTheme.typography.titleMedium,
                         color = c.content,
                         modifier = Modifier.padding(horizontal = 20.dp),

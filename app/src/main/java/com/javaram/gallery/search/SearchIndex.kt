@@ -325,12 +325,101 @@ class SearchIndex private constructor(context: Context) :
         return out
     }
 
+    /** Recomputes a person's average face from all their faces; removes them if none are left. */
+    private fun refreshPerson(db: SQLiteDatabase, personId: Long) {
+        val embs = ArrayList<FloatArray>()
+        db.rawQuery("SELECT emb FROM faces WHERE person = ?", arrayOf(personId.toString())).use { c ->
+            while (c.moveToNext()) embs += Embeddings.fromBytes(c.getBlob(0))
+        }
+        if (embs.isEmpty()) {
+            db.delete("persons", "id = ?", arrayOf(personId.toString()))
+            return
+        }
+        val sum = FloatArray(embs[0].size)
+        for (e in embs) for (i in sum.indices) sum[i] += e[i]
+        val v = ContentValues().apply {
+            put("centroid", Embeddings.toBytes(Embeddings.normalize(sum)))
+            put("n", embs.size)
+        }
+        db.update("persons", v, "id = ?", arrayOf(personId.toString()))
+        // If the cover face no longer belongs to this person, pick their clearest face.
+        val coverOk = db.rawQuery(
+            "SELECT 1 FROM persons p JOIN faces f ON f.id = p.cover_face WHERE p.id = ? AND f.person = p.id",
+            arrayOf(personId.toString()),
+        ).use { it.moveToFirst() }
+        if (!coverOk) {
+            db.execSQL(
+                """UPDATE persons SET
+                     cover_face = (SELECT id FROM faces WHERE person = $personId ORDER BY area DESC LIMIT 1),
+                     cover_area = (SELECT area FROM faces WHERE person = $personId ORDER BY area DESC LIMIT 1)
+                   WHERE id = $personId"""
+            )
+        }
+    }
+
+    /** Moves this person's faces in the given photos to another person. */
+    fun moveFaces(from: Long, mediaIds: Collection<Long>, to: Long) {
+        if (mediaIds.isEmpty() || from == to) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL(
+                "UPDATE faces SET person = $to WHERE person = $from AND media_id IN (${mediaIds.joinToString(",")})"
+            )
+            refreshPerson(db, to)
+            refreshPerson(db, from)
+            db.execSQL("INSERT OR IGNORE INTO nomerge(a, b) VALUES (${minOf(from, to)}, ${maxOf(from, to)})")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Starts a new person from this person's faces in the given photos. Returns the new id. */
+    fun moveFacesToNewPerson(from: Long, mediaIds: Collection<Long>, name: String?): Long {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val v = ContentValues().apply { if (!name.isNullOrBlank()) put("name", name.trim()); put("n", 0) }
+            val id = db.insert("persons", null, v)
+            db.execSQL(
+                "UPDATE faces SET person = $id WHERE person = $from AND media_id IN (${mediaIds.joinToString(",")})"
+            )
+            db.execSQL("UPDATE persons SET cover_face = NULL WHERE id = $id")
+            refreshPerson(db, id)
+            refreshPerson(db, from)
+            db.execSQL("INSERT OR IGNORE INTO nomerge(a, b) VALUES (${minOf(from, id)}, ${maxOf(from, id)})")
+            db.setTransactionSuccessful()
+            return id
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Uses this person's face in the given photo as their cover, and keeps it (automatic picks won't replace it). */
+    fun setCover(personId: Long, mediaId: Long): Boolean {
+        val faceId = readableDatabase.rawQuery(
+            "SELECT id FROM faces WHERE person = ? AND media_id = ? ORDER BY area DESC LIMIT 1",
+            arrayOf(personId.toString(), mediaId.toString()),
+        ).use { c -> if (c.moveToFirst()) c.getLong(0) else null } ?: return false
+        writableDatabase.execSQL("UPDATE persons SET cover_face = $faceId, cover_area = 2.0 WHERE id = $personId")
+        return true
+    }
+
     /** "Not this person": detach the person's faces in these photos. */
     fun removeFromPerson(personId: Long, mediaIds: Collection<Long>) {
         if (mediaIds.isEmpty()) return
-        writableDatabase.execSQL(
-            "UPDATE faces SET person = -2 WHERE person = $personId AND media_id IN (${mediaIds.joinToString(",")})"
-        )
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL(
+                "UPDATE faces SET person = -2 WHERE person = $personId AND media_id IN (${mediaIds.joinToString(",")})"
+            )
+            refreshPerson(db, personId)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun versions(): Map<Long, Long> {

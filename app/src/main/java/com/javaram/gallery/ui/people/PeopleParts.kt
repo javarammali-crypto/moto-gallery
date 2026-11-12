@@ -96,6 +96,8 @@ fun NameDialog(
     initial: String,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
+    title: String = "Who is this?",
+    allowEmpty: Boolean = false,
 ) {
     val c = GalleryTheme.colors
     var text by remember(visible) { mutableStateOf(initial) }
@@ -122,7 +124,15 @@ fun NameDialog(
                 shape = RoundedCornerShape(30.dp),
             ) {
                 Column(Modifier.padding(22.dp)) {
-                    Text("Who is this?", style = MaterialTheme.typography.titleMedium, color = c.content)
+                    Text(title, style = MaterialTheme.typography.titleMedium, color = c.content)
+                    if (allowEmpty) {
+                        Text(
+                            "Optional — you can name them later.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.secondary,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
                     Spacer(Modifier.height(14.dp))
                     Box(
                         Modifier

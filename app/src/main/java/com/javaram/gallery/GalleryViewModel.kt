@@ -278,6 +278,11 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     fun mergePersons(from: Long, into: Long) = peopleOp { it.mergePersons(from, into) }
     fun setPersonHidden(id: Long, hidden: Boolean) = peopleOp { it.setHidden(id, hidden) }
     fun removeFromPerson(id: Long, mediaIds: Collection<Long>) = peopleOp { it.removeFromPerson(id, mediaIds) }
+    fun moveToPerson(from: Long, mediaIds: Collection<Long>, to: Long) =
+        peopleOp { it.moveFaces(from, mediaIds.toList(), to) }
+    fun moveToNewPerson(from: Long, mediaIds: Collection<Long>, name: String?) =
+        peopleOp { it.moveFacesToNewPerson(from, mediaIds.toList(), name) }
+    fun setPersonCover(personId: Long, mediaId: Long) = peopleOp { it.setCover(personId, mediaId) }
 
     fun reloadIndex() {
         viewModelScope.launch { _index.value = withContext(Dispatchers.IO) { SearchIndex.get(getApplication()).all() } }
