@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Stacked photo cards with a sun and mountain -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- back card -->
+    <path
+        android:fillColor="#66FFFFFF"
+        android:pathData="M40,30h34a6,6 0,0 1,6 6v30a6,6 0,0 1,-6 6h-34a6,6 0,0 1,-6 -6v-30a6,6 0,0 1,6 -6z" />
+    <!-- front card -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34,38h34a6,6 0,0 1,6 6v28a6,6 0,0 1,-6 6h-34a6,6 0,0 1,-6 -6v-28a6,6 0,0 1,6 -6z" />
+    <!-- mountains -->
+    <path
+        android:fillColor="#FFFF6A33"
+        android:pathData="M30,72l12,-14l8,9l6,-6l14,13z" />
+    <!-- sun -->
+    <path
+        android:fillColor="#FFFFA24C"
+        android:pathData="M58,50m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0" />
+</vector>
