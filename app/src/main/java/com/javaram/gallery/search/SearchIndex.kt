@@ -24,7 +24,7 @@ data class IndexEntry(
 
 /** Small SQLite store holding what the indexer learned about each photo. Everything stays on the phone. */
 class SearchIndex private constructor(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "search.db", null, 3) {
+    SQLiteOpenHelper(context.applicationContext, "search.db", null, 4) {
 
     companion object {
         @Volatile private var instance: SearchIndex? = null
@@ -77,6 +77,43 @@ class SearchIndex private constructor(context: Context) :
         )
         db.execSQL("CREATE TABLE IF NOT EXISTS face_done(media_id INTEGER PRIMARY KEY, modified INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE IF NOT EXISTS nomerge(a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY(a, b))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS quality(id INTEGER PRIMARY KEY, modified INTEGER NOT NULL, dhash INTEGER, sharp REAL)")
+    }
+
+    // ---------------- Photo quality (for Cleanup) ----------------
+
+    data class Quality(val dhash: Long, val sharp: Float)
+
+    fun qualityVersions(): Map<Long, Long> {
+        val out = HashMap<Long, Long>()
+        readableDatabase.rawQuery("SELECT id, modified FROM quality", null).use { c ->
+            while (c.moveToNext()) out[c.getLong(0)] = c.getLong(1)
+        }
+        return out
+    }
+
+    fun putQuality(rows: List<Triple<Long, Long, Quality>>) {
+        if (rows.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val st = db.compileStatement("INSERT OR REPLACE INTO quality(id, modified, dhash, sharp) VALUES (?, ?, ?, ?)")
+            for ((id, mod, q) in rows) {
+                st.bindLong(1, id); st.bindLong(2, mod); st.bindLong(3, q.dhash); st.bindDouble(4, q.sharp.toDouble())
+                st.executeInsert(); st.clearBindings()
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun quality(): Map<Long, Quality> {
+        val out = HashMap<Long, Quality>()
+        readableDatabase.rawQuery("SELECT id, dhash, sharp FROM quality", null).use { c ->
+            while (c.moveToNext()) out[c.getLong(0)] = Quality(c.getLong(1), c.getFloat(2))
+        }
+        return out
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {

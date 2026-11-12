@@ -78,6 +78,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        // The Private safe locks again whenever Gallery leaves the screen.
+        if (!isChangingConfigurations) vm.lockSafe()
+    }
+
     private fun readIntent(intent: Intent?) {
         val action = intent?.action
         externalUri = if ((action == Intent.ACTION_VIEW || action == "com.android.camera.action.REVIEW") && intent.data != null) {

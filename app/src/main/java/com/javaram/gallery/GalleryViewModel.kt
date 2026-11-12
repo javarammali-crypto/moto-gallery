@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -197,7 +198,8 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             // Search analysis and face grouping run side by side.
             val labels = launch { Indexer.run(getApplication(), items) }
             val faces = launch { FaceIndexer.run(getApplication(), items) }
-            labels.join(); faces.join()
+            val quality = launch { com.javaram.gallery.search.QualityIndexer.run(getApplication(), items) }
+            labels.join(); faces.join(); quality.join()
         }
     }
 
@@ -306,6 +308,88 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().remove("recentSearches").apply()
     }
 
+    // --- Memories & slideshow ---
+    val memories: StateFlow<List<com.javaram.gallery.search.Memory>> =
+        combine(_all, _index, _peopleByMedia) { a, i, p -> Triple(a, i, p) }
+            .mapLatestDefault { (a, i, p) -> com.javaram.gallery.search.Memories.build(a, i, p) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    private val _slideshow = MutableStateFlow<Pair<String, List<Media>>?>(null)
+    val slideshow: StateFlow<Pair<String, List<Media>>?> = _slideshow.asStateFlow()
+    fun playSlideshow(title: String, items: List<Media>) { _slideshow.value = title to items.filter { !it.isVideo } }
+
+    // --- Cleanup ---
+    val qualityProgress: StateFlow<IndexProgress> = com.javaram.gallery.search.QualityIndexer.progress
+    private val _cleanup = MutableStateFlow(com.javaram.gallery.search.CleanupReport.Empty)
+    val cleanup: StateFlow<com.javaram.gallery.search.CleanupReport> = _cleanup.asStateFlow()
+    private var cleanupWatch: Job? = null
+
+    fun watchCleanup() {
+        if (cleanupWatch != null) return
+        cleanupWatch = viewModelScope.launch {
+            combine(_all, com.javaram.gallery.search.QualityIndexer.generation) { items, _ -> items }.collect { items ->
+                val q = withContext(Dispatchers.IO) { SearchIndex.get(getApplication()).quality() }
+                _cleanup.value = withContext(Dispatchers.Default) { com.javaram.gallery.search.CleanupEngine.analyse(items, q) }
+            }
+        }
+    }
+
+    // --- Private safe ---
+    private val _safe = MutableStateFlow<List<com.javaram.gallery.vault.VaultItem>>(emptyList())
+    val safe: StateFlow<List<com.javaram.gallery.vault.VaultItem>> = _safe.asStateFlow()
+    private val _safeUnlocked = MutableStateFlow(false)
+    val safeUnlocked: StateFlow<Boolean> = _safeUnlocked.asStateFlow()
+    private val _safeBusy = MutableStateFlow<String?>(null)
+    /** Progress text while moving items in or out of the safe. */
+    val safeBusy: StateFlow<String?> = _safeBusy.asStateFlow()
+
+    fun unlockSafe() { _safeUnlocked.value = true; reloadSafe() }
+    fun lockSafe() {
+        _safeUnlocked.value = false
+        com.javaram.gallery.vault.Vault.clearPlayback(getApplication())
+    }
+
+    fun reloadSafe() {
+        viewModelScope.launch { _safe.value = com.javaram.gallery.vault.Vault.list(getApplication()) }
+    }
+
+    /** Encrypts items into the safe; returns ids of the safe copies (originals still need deleting). */
+    suspend fun addToSafe(items: List<Media>): List<Long> {
+        val ids = ArrayList<Long>()
+        items.forEachIndexed { i, m ->
+            _safeBusy.value = "Moving to Private safe… ${i + 1} of ${items.size}"
+            runCatching { com.javaram.gallery.vault.Vault.add(getApplication(), m) }.onSuccess { ids += it }
+        }
+        _safeBusy.value = null
+        reloadSafe()
+        return ids
+    }
+
+    fun undoAddToSafe(ids: List<Long>) {
+        viewModelScope.launch { com.javaram.gallery.vault.Vault.remove(getApplication(), ids); reloadSafe() }
+    }
+
+    fun restoreFromSafe(items: List<com.javaram.gallery.vault.VaultItem>, done: (Int) -> Unit) {
+        viewModelScope.launch {
+            var ok = 0
+            items.forEachIndexed { i, it ->
+                _safeBusy.value = "Restoring… ${i + 1} of ${items.size}"
+                if (com.javaram.gallery.vault.Vault.restore(getApplication(), it)) ok++
+            }
+            _safeBusy.value = null
+            reloadSafe()
+            scheduleRefresh(0)
+            done(ok)
+        }
+    }
+
+    fun deleteFromSafe(items: List<com.javaram.gallery.vault.VaultItem>) {
+        viewModelScope.launch {
+            com.javaram.gallery.vault.Vault.remove(getApplication(), items.map { it.id })
+            reloadSafe()
+        }
+    }
+
     fun setColumns(value: Int) {
         val v = value.coerceIn(2, 7)
         _columns.value = v
@@ -388,3 +472,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+private fun <T, R> kotlinx.coroutines.flow.Flow<T>.mapLatestDefault(block: suspend (T) -> R): kotlinx.coroutines.flow.Flow<R> =
+    this.mapLatest { withContext(Dispatchers.Default) { block(it) } }

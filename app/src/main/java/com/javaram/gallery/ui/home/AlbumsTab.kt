@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.AutoDelete
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Screenshot
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Icon
@@ -79,6 +80,7 @@ fun AlbumsTab(
     people: List<com.javaram.gallery.search.Person> = emptyList(),
     onOpenPeople: () -> Unit = {},
     onOpenPerson: (Long) -> Unit = {},
+    onOpenSafe: () -> Unit = {},
 ) {
     val c = GalleryTheme.colors
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 110.dp
@@ -91,6 +93,7 @@ fun AlbumsTab(
             add(QuickTile(AlbumKeys.VIDEOS, "Videos", Icons.Outlined.Videocam, vids.firstOrNull(), vids.size, listOf(Color(0xFF5BA8FF), Color(0xFF3D6BFF))))
             if (shots != null) add(QuickTile(shots.key, "Screenshots", Icons.Outlined.Screenshot, shots.cover, shots.count, listOf(Color(0xFF34C3A0), Color(0xFF14937A))))
             add(QuickTile("trash", "Recently deleted", Icons.Outlined.AutoDelete, null, null, listOf(Color(0xFF9B9BA5), Color(0xFF63636D))))
+            add(QuickTile("safe", "Private safe", Icons.Outlined.Lock, null, null, listOf(Color(0xFF7B61FF), Color(0xFF4B2FD6))))
         }
     }
     val myAlbums = remember(albums) { albums.filterNot { it.name.equals("Screenshots", ignoreCase = true) } }
@@ -117,7 +120,13 @@ fun AlbumsTab(
                 icon = q.icon,
                 fallbackColors = q.colors,
                 pinned = false,
-                onClick = { if (q.key == "trash") onOpenTrash() else onOpenAlbum(q.key) },
+                onClick = {
+                    when (q.key) {
+                        "trash" -> onOpenTrash()
+                        "safe" -> onOpenSafe()
+                        else -> onOpenAlbum(q.key)
+                    }
+                },
                 onLongClick = null,
             )
         }

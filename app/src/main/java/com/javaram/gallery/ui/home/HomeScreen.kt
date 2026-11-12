@@ -48,6 +48,7 @@ import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.PushPin
@@ -130,6 +131,7 @@ fun HomeScreen(
     onOpenSearch: () -> Unit,
     onOpenPeople: () -> Unit,
     onOpenPerson: (Long) -> Unit,
+    onOpenRoute: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val haze = remember { HazeState() }
@@ -144,6 +146,7 @@ fun HomeScreen(
     val bannerDismissed by vm.bannerDismissed.collectAsStateWithLifecycle()
     val update by vm.update.collectAsStateWithLifecycle()
     val people by vm.people.collectAsStateWithLifecycle()
+    val memories by vm.memories.collectAsStateWithLifecycle()
 
     var selectionMode by rememberSaveable { mutableStateOf(false) }
     var selection by remember { mutableStateOf(emptySet<Long>()) }
@@ -187,6 +190,7 @@ fun HomeScreen(
         vm.scheduleRefresh(0)
     }
     val selectedItems = remember(selection, all) { all.filter { it.id in selection } }
+    val hideInSafe = com.javaram.gallery.ui.safe.rememberHideInSafe(vm) { exitSelection() }
 
     val activeState: LazyGridState = when (tab) {
         HomeTab.Photos -> photosState
@@ -238,8 +242,23 @@ fun HomeScreen(
                         people = people,
                         onOpenPeople = onOpenPeople,
                         onOpenPerson = onOpenPerson,
+                        onOpenSafe = { onOpenRoute("safe") },
                     )
-                    HomeTab.Create -> CreateTab(state = createState)
+                    HomeTab.Create -> CreateTab(
+                        state = createState,
+                        memories = memories,
+                        onMemory = { m -> vm.playSlideshow(m.title, m.items); onOpenRoute("slideshow") },
+                        onCollage = { onOpenRoute("collage") },
+                        onEditor = { onOpenRoute("editpick") },
+                        onCleanup = { onOpenRoute("cleanup") },
+                        onSafe = { onOpenRoute("safe") },
+                        onSlideshow = {
+                            val favs = all.filter { it.isFavorite && !it.isVideo }
+                            val list = if (favs.size >= 3) favs else all.filter { !it.isVideo }.take(60)
+                            vm.playSlideshow(if (favs.size >= 3) "Favourites" else "Recent photos", list)
+                            onOpenRoute("slideshow")
+                        },
+                    )
                 }
             }
         }
@@ -336,6 +355,7 @@ fun HomeScreen(
                         allFavorite = allFav,
                         onShare = { shareMedia(context, selectedItems) },
                         onFavorite = { request(vm.favoriteRequest(selectedItems, !allFav)) },
+                        onHide = { hideInSafe(selectedItems) },
                         onDelete = {
                             val items = selectedItems
                             val doIt = { request(vm.trashRequest(items)) }
@@ -384,6 +404,8 @@ fun HomeScreen(
             }
             HomeSheet.More -> buildList {
                 add(SheetOption("Recently deleted", Icons.Outlined.AutoDelete) { onOpenTrash() })
+                add(SheetOption("Private safe", Icons.Outlined.Lock) { onOpenRoute("safe") })
+                add(SheetOption("Cleanup", Icons.Outlined.Refresh) { onOpenRoute("cleanup") })
                 add(SheetOption("Check for updates", Icons.Outlined.SystemUpdate) { vm.checkForUpdates(manual = true) })
                 if (!canManage) {
                     add(SheetOption("Skip pop-ups", Icons.Outlined.VerifiedUser, subtitle = "Manage media access") {
@@ -570,6 +592,7 @@ fun SelectionBar(
     onShare: () -> Unit,
     onFavorite: () -> Unit,
     onDelete: () -> Unit,
+    onHide: (() -> Unit)? = null,
 ) {
     GlassSurface(haze, Modifier.height(66.dp), shape = CircleShape) {
         Row(
@@ -582,6 +605,7 @@ fun SelectionBar(
                 if (allFavorite) "Unfavourite" else "Favourite",
                 enabled, onFavorite,
             )
+            if (onHide != null) BarAction(Icons.Outlined.Lock, "Hide", enabled, onHide)
             BarAction(Icons.Outlined.DeleteOutline, "Delete", enabled, onDelete, tint = Color(0xFFFF453A))
         }
     }

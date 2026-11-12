@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Slideshow
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,6 +72,7 @@ fun AlbumScreen(
     vm: GalleryViewModel,
     albumKey: String,
     onBack: () -> Unit,
+    onPlay: (String, List<Media>) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val haze = remember { HazeState() }
@@ -94,6 +96,7 @@ fun AlbumScreen(
 
     val request = rememberMediaRequest { ok -> if (ok) exitSelection(); vm.scheduleRefresh(0) }
     val selectedItems = remember(selection, items) { items.filter { it.id in selection } }
+    val hideInSafe = com.javaram.gallery.ui.safe.rememberHideInSafe(vm) { exitSelection() }
     val collapsed by remember { derivedStateOf { state.firstVisibleItemIndex > 0 || state.firstVisibleItemScrollOffset > 160 } }
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 110.dp
     val videos = remember(items) { items.count { it.isVideo } }
@@ -151,6 +154,8 @@ fun AlbumScreen(
                         )
                     }
                 }
+                GlassIconButton(haze, Icons.Outlined.Slideshow, "Slideshow", size = 42.dp) { onPlay(title, items) }
+                Spacer(Modifier.width(10.dp))
                 GlassIconButton(haze, Icons.Outlined.GridView, "Group by day", size = 42.dp) { grouped = !grouped }
                 Spacer(Modifier.width(10.dp))
                 GlassIconButton(haze, Icons.Outlined.Checklist, "Select", size = 42.dp) { selectionMode = true }
@@ -170,6 +175,7 @@ fun AlbumScreen(
                 allFavorite = allFav,
                 onShare = { shareMedia(context, selectedItems) },
                 onFavorite = { request(vm.favoriteRequest(selectedItems, !allFav)) },
+                onHide = { hideInSafe(selectedItems) },
                 onDelete = {
                     val targets = selectedItems
                     val doIt = { request(vm.trashRequest(targets)) }

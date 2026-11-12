@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Restore
@@ -183,6 +184,7 @@ fun ViewerOverlay(
         var showMore by remember { mutableStateOf(false) }
         var wallpaperFor by remember { mutableStateOf<Media?>(null) }
         var editing by remember { mutableStateOf<Media?>(null) }
+        val hideInSafe = com.javaram.gallery.ui.safe.rememberHideInSafe(vm)
         var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
         val zoomStates = remember { mutableStateMapOf<Long, ZoomableImageState>() }
 
@@ -565,6 +567,7 @@ fun ViewerOverlay(
             placement = PopupAnchor.AboveEnd,
             options = if (m == null) emptyList() else buildList {
                 if (!m.isVideo) add(SheetOption("Set as wallpaper", Icons.Outlined.Wallpaper) { wallpaperFor = m })
+                if (!session.trash) add(SheetOption("Move to Private safe", Icons.Outlined.Lock) { hideInSafe(listOf(m)) })
                 add(SheetOption("Use in another app…", Icons.Outlined.OpenInNew) { setAs(context, m) })
                 add(SheetOption("Open with…", Icons.Outlined.OpenInNew) { openWith(context, m) })
                 add(SheetOption("Details", Icons.Outlined.Info) { showInfo = true })

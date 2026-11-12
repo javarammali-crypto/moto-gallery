@@ -12,9 +12,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.navArgument
@@ -65,11 +65,15 @@ fun GalleryNav(vm: GalleryViewModel) {
                     onOpenSearch = { nav.navigate(Routes.search()) },
                     onOpenPeople = { nav.navigate(Routes.PEOPLE) },
                     onOpenPerson = { nav.navigate(Routes.person(it)) },
+                    onOpenRoute = { nav.navigate(it) },
                 )
             }
             composable(Routes.ALBUM) { entry ->
                 val key = entry.arguments?.getString("key") ?: ""
-                AlbumScreen(vm = vm, albumKey = key, onBack = { nav.popBackStack() })
+                AlbumScreen(
+                    vm = vm, albumKey = key, onBack = { nav.popBackStack() },
+                    onPlay = { t, list -> vm.playSlideshow(t, list); nav.navigate("slideshow") },
+                )
             }
             composable(Routes.TRASH) {
                 TrashScreen(vm = vm, onBack = { nav.popBackStack() })
@@ -102,6 +106,33 @@ fun GalleryNav(vm: GalleryViewModel) {
                     personId = entry.arguments?.getLong("id") ?: -1L,
                     onBack = { nav.popBackStack() },
                 )
+            }
+            composable("collage") { com.javaram.gallery.ui.create.CollageScreen(vm, onBack = { nav.popBackStack() }) }
+            composable("editpick") { com.javaram.gallery.ui.create.EditPickScreen(vm, onBack = { nav.popBackStack() }) }
+            composable("safe") { com.javaram.gallery.ui.safe.SafeScreen(vm, onBack = { nav.popBackStack() }) }
+            composable("cleanup") {
+                com.javaram.gallery.ui.cleanup.CleanupScreen(
+                    vm, onBack = { nav.popBackStack() },
+                    onOpen = { k -> nav.navigate("cleanup/${k.name}") },
+                )
+            }
+            composable("cleanup/{kind}") { entry ->
+                val kind = runCatching {
+                    com.javaram.gallery.search.CleanupKind.valueOf(entry.arguments?.getString("kind") ?: "")
+                }.getOrDefault(com.javaram.gallery.search.CleanupKind.Duplicates)
+                com.javaram.gallery.ui.cleanup.CleanupReviewScreen(vm, kind, onBack = { nav.popBackStack() })
+            }
+            composable(
+                "slideshow",
+                enterTransition = { fadeIn(tween(400)) },
+                exitTransition = { fadeOut(tween(300)) },
+                popEnterTransition = { fadeIn(tween(300)) },
+                popExitTransition = { fadeOut(tween(300)) },
+            ) {
+                val show by vm.slideshow.collectAsStateWithLifecycle()
+                val s = show
+                if (s == null) androidx.compose.runtime.LaunchedEffect(Unit) { nav.popBackStack() }
+                else com.javaram.gallery.ui.create.SlideshowScreen(s.first, s.second, onClose = { nav.popBackStack() })
             }
             composable(Routes.MAP) {
                 PlacesMapScreen(

@@ -21,6 +21,7 @@ class IndexWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         kotlinx.coroutines.coroutineScope {
             launch { Indexer.run(applicationContext, items, deadlineMillis = deadline) }
             launch { FaceIndexer.run(applicationContext, items, deadlineMillis = deadline) }
+            launch { QualityIndexer.run(applicationContext, items, deadlineMillis = deadline) }
         }
         return Result.success()
     }
