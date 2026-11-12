@@ -251,7 +251,7 @@ fun HomeScreen(
                 }
             } else {
                 Box(Modifier.weight(1f)) {
-                    AnimatedVisibility(
+                    androidx.compose.animation.AnimatedVisibility(
                         visible = collapsed,
                         enter = fadeIn() + slideInVertically { it / 2 },
                         exit = fadeOut() + slideOutVertically { it / 2 },

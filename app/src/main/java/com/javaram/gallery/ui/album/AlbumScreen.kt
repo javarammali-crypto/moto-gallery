@@ -132,7 +132,7 @@ fun AlbumScreen(
             } else {
                 GlassIconButton(haze, Icons.AutoMirrored.Outlined.ArrowBack, "Back", size = 42.dp, onClick = onBack)
                 Box(Modifier.weight(1f).padding(horizontal = 14.dp)) {
-                    AnimatedVisibility(collapsed, enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 }) {
+                    androidx.compose.animation.AnimatedVisibility(collapsed, enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 }) {
                         Text(
                             title, style = MaterialTheme.typography.titleMedium,
                             color = GalleryTheme.colors.content, maxLines = 1, overflow = TextOverflow.Ellipsis,
