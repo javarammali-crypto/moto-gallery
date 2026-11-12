@@ -24,7 +24,7 @@ data class IndexEntry(
 
 /** Small SQLite store holding what the indexer learned about each photo. Everything stays on the phone. */
 class SearchIndex private constructor(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "search.db", null, 2) {
+    SQLiteOpenHelper(context.applicationContext, "search.db", null, 3) {
 
     companion object {
         @Volatile private var instance: SearchIndex? = null
@@ -76,10 +76,11 @@ class SearchIndex private constructor(context: Context) :
             )"""
         )
         db.execSQL("CREATE TABLE IF NOT EXISTS face_done(media_id INTEGER PRIMARY KEY, modified INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS nomerge(a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY(a, b))")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) createFaceTables(db)
+        createFaceTables(db)
     }
 
     // ---------------- Faces & people ----------------
@@ -242,6 +243,86 @@ class SearchIndex private constructor(context: Context) :
         } finally {
             db.endTransaction()
         }
+    }
+
+    /** Up to [limit] of each person's clearest face fingerprints. */
+    fun exemplars(limit: Int = 24): Map<Long, List<FloatArray>> {
+        val out = HashMap<Long, MutableList<FloatArray>>()
+        readableDatabase.rawQuery("SELECT person, emb FROM faces WHERE person >= 0 ORDER BY person, area DESC", null).use { c ->
+            while (c.moveToNext()) {
+                val list = out.getOrPut(c.getLong(0)) { ArrayList() }
+                if (list.size < limit) list += Embeddings.fromBytes(c.getBlob(1))
+            }
+        }
+        return out
+    }
+
+    data class FaceRow(val id: Long, val person: Long, val emb: FloatArray, val area: Float)
+
+    /** Every face that may be grouped (not ones the user removed), largest first. */
+    fun facesForRegroup(): List<FaceRow> {
+        val out = ArrayList<FaceRow>()
+        readableDatabase.rawQuery("SELECT id, person, emb, area FROM faces WHERE person != -2 ORDER BY area DESC", null).use { c ->
+            while (c.moveToNext()) out += FaceRow(c.getLong(0), c.getLong(1), Embeddings.fromBytes(c.getBlob(2)), c.getFloat(3))
+        }
+        return out
+    }
+
+    data class OldPerson(val id: Long, val name: String?, val hidden: Boolean)
+
+    fun oldPersons(): List<OldPerson> {
+        val out = ArrayList<OldPerson>()
+        readableDatabase.rawQuery("SELECT id, name, hidden FROM persons", null).use { c ->
+            while (c.moveToNext()) out += OldPerson(c.getLong(0), c.getString(1), c.getInt(2) == 1)
+        }
+        return out
+    }
+
+    data class NewPerson(
+        val name: String?, val hidden: Boolean, val centroid: FloatArray, val count: Int,
+        val coverFace: Long, val coverArea: Float, val faceIds: List<Long>,
+    )
+
+    /** Replaces all people with a freshly computed grouping. */
+    fun rewritePeople(people: List<NewPerson>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM persons")
+            db.execSQL("DELETE FROM nomerge")
+            db.execSQL("UPDATE faces SET person = -1 WHERE person >= 0")
+            val upd = db.compileStatement("UPDATE faces SET person = ? WHERE id = ?")
+            for (p in people) {
+                val v = ContentValues().apply {
+                    if (p.name != null) put("name", p.name)
+                    put("hidden", if (p.hidden) 1 else 0)
+                    put("centroid", Embeddings.toBytes(p.centroid))
+                    put("n", p.count)
+                    put("cover_face", p.coverFace)
+                    put("cover_area", p.coverArea)
+                }
+                val pid = db.insert("persons", null, v)
+                for (f in p.faceIds) {
+                    upd.bindLong(1, pid); upd.bindLong(2, f); upd.executeUpdateDelete(); upd.clearBindings()
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun notSame(a: Long, b: Long) {
+        val v = ContentValues().apply { put("a", minOf(a, b)); put("b", maxOf(a, b)) }
+        writableDatabase.insertWithOnConflict("nomerge", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    fun notSamePairs(): Set<Pair<Long, Long>> {
+        val out = HashSet<Pair<Long, Long>>()
+        readableDatabase.rawQuery("SELECT a, b FROM nomerge", null).use { c ->
+            while (c.moveToNext()) out += c.getLong(0) to c.getLong(1)
+        }
+        return out
     }
 
     /** "Not this person": detach the person's faces in these photos. */

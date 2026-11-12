@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material.icons.outlined.Share
@@ -100,6 +101,7 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
     var naming by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
     var showMore by remember { mutableStateOf(false) }
+    var merging by remember { mutableStateOf(false) }
     var moreAnchor by remember { mutableStateOf<Rect?>(null) }
     var session by remember { mutableStateOf<ViewerSession?>(null) }
     var hiddenId by remember { mutableStateOf<Long?>(null) }
@@ -110,6 +112,7 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
 
     fun exitSelection() { selectionMode = false; selection = emptySet() }
     BackHandler(selectionMode) { exitSelection() }
+    BackHandler(merging) { merging = false }
     val request = rememberMediaRequest { ok -> if (ok) exitSelection(); vm.scheduleRefresh(0) }
     val selected = remember(selection, items) { items.filter { it.id in selection } }
     val title = person?.name ?: "Add name"
@@ -227,6 +230,7 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
             placement = PopupAnchor.BelowEnd,
             options = listOf(
                 SheetOption(if (person?.name == null) "Add name" else "Rename", Icons.Outlined.Edit) { naming = true },
+                SheetOption("Merge with…", Icons.Outlined.GroupAdd) { merging = true },
                 SheetOption(
                     if (person?.hidden == true) "Show this person" else "Hide this person",
                     if (person?.hidden == true) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
@@ -248,6 +252,23 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
                 if (person != null) saveName(vm, person, text) { confirm = it }
             },
         )
+        MergePicker(
+            visible = merging,
+            haze = haze,
+            people = people.filter { it.id != personId && !it.hidden && (it.name != null || it.count >= MIN_PERSON_PHOTOS) },
+            byId = byId,
+            onDismiss = { merging = false },
+            onPick = { other ->
+                merging = false
+                confirm = ConfirmRequest(
+                    "Combine with ${other.name ?: "this person"}?",
+                    "Both groups are the same person. Their photos will be shown together here.",
+                    "Combine",
+                    destructive = false,
+                ) { vm.mergePersons(from = other.id, into = personId) }
+            },
+        )
+
         GlassDialog(request = confirm, state = haze, onDismiss = { confirm = null })
 
         val sess = session
@@ -261,6 +282,75 @@ fun PersonScreen(vm: GalleryViewModel, personId: Long, onBack: () -> Unit) {
                 onCurrentChanged = { hiddenId = it },
                 onClosed = { session = null; hiddenId = null },
             )
+        }
+    }
+}
+
+/** Glass panel listing people to combine with. */
+@Composable
+private fun MergePicker(
+    visible: Boolean,
+    haze: HazeState,
+    people: List<com.javaram.gallery.search.Person>,
+    byId: Map<Long, com.javaram.gallery.data.Media>,
+    onDismiss: () -> Unit,
+    onPick: (com.javaram.gallery.search.Person) -> Unit,
+) {
+    val c = GalleryTheme.colors
+    Box(Modifier.fillMaxSize()) {
+        AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut()) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.25f))
+                    .then(Modifier.pressable(onClick = onDismiss))
+            )
+        }
+        AnimatedVisibility(
+            visible,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            GlassSurface(
+                haze,
+                Modifier.navigationBarsPadding().padding(12.dp).fillMaxWidth().height(420.dp),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(30.dp),
+                contentAlignment = Alignment.TopStart,
+            ) {
+                Column(Modifier.padding(top = 18.dp)) {
+                    Text(
+                        "Merge with…",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = c.content,
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(4),
+                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 18.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(14.dp),
+                    ) {
+                        items(people.size, key = { people[it].id }) { i ->
+                            val p = people[i]
+                            Column(
+                                Modifier.pressable { onPick(p) },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                FaceAvatar(p, byId, 64.dp)
+                                Text(
+                                    p.name ?: countLabel(p.count),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (p.name != null) c.content else c.secondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

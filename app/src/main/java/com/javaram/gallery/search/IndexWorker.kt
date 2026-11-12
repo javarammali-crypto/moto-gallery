@@ -9,6 +9,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.javaram.gallery.data.MediaRepository
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.launch
 
 /** Keeps analysing photos in the background while the phone is charging. */
 class IndexWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
@@ -17,8 +18,10 @@ class IndexWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         if (items.isEmpty()) return Result.success()
         // WorkManager gives us about 10 minutes; stop a little before that.
         val deadline = System.currentTimeMillis() + 8 * 60_000L
-        Indexer.run(applicationContext, items, deadlineMillis = deadline)
-        FaceIndexer.run(applicationContext, items, deadlineMillis = deadline)
+        kotlinx.coroutines.coroutineScope {
+            launch { Indexer.run(applicationContext, items, deadlineMillis = deadline) }
+            launch { FaceIndexer.run(applicationContext, items, deadlineMillis = deadline) }
+        }
         return Result.success()
     }
 

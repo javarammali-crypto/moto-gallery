@@ -45,10 +45,9 @@ object FaceIndexer {
     private const val MODEL_SHA256 = "d7c1f7f130376982c7004920ddc41925ac2e5aecf6522f476c8bbb3669db7013"
     private const val INPUT = 160
 
-    /** Similarity needed to join an existing person. */
-    private const val MATCH = 0.62f
-    /** Two people this similar are treated as one. */
-    private const val MERGE = 0.74f
+    /** Bump to regroup everyone already found when the matching rules change. */
+    private const val GROUPING_VERSION = 2
+    private const val MIN_FACE_PX = 60
 
     private val mutex = Mutex()
     private val _progress = MutableStateFlow(IndexProgress())
@@ -111,6 +110,11 @@ object FaceIndexer {
                 val todo = photos.filter { done[it.id] != it.dateModified }
                 var count = photos.size - todo.size
                 _progress.value = IndexProgress(count, photos.size, todo.isNotEmpty())
+                if (prefs(app).getInt("grouping", 0) < GROUPING_VERSION) {
+                    regroup(index)
+                    prefs(app).edit().putInt("grouping", GROUPING_VERSION).apply()
+                    _generation.value++
+                }
                 if (todo.isEmpty()) return@withContext
 
                 val model = withContext(Dispatchers.IO) { ensureModel(app) } ?: return@withContext
@@ -121,7 +125,11 @@ object FaceIndexer {
                         .setMinFaceSize(0.06f)
                         .build()
                 )
-                val people = index.loadPersonCentroids()
+                val ex = index.exemplars()
+                val groups = index.loadPersonCentroids().map {
+                    FaceMatch.Group(it.id, it.centroid, it.count, ex[it.id]?.toMutableList() ?: ArrayList(), it.name)
+                }.toMutableList()
+                val coverAreas = index.loadPersonCentroids().associate { it.id to it.coverArea }.toMutableMap()
                 val input = ByteBuffer.allocateDirect(INPUT * INPUT * 3 * 4).order(ByteOrder.nativeOrder())
                 val output = Array(1) { FloatArray(128) }
                 try {
@@ -142,27 +150,25 @@ object FaceIndexer {
                             }
                             for (face in faces) {
                                 val box = face.boundingBox
-                                if (box.width() < 40 || box.height() < 40) continue
-                                if (abs(face.headEulerAngleY) > 45f) continue
+                                if (box.width() < MIN_FACE_PX || box.height() < MIN_FACE_PX) continue
+                                if (abs(face.headEulerAngleY) > 40f) continue
                                 val crop = cropFace(bitmap, face) ?: continue
-                                val emb = embed(interpreter, crop, input, output)
+                                // Average the face with its mirror image: steadier fingerprints.
+                                val e1 = embed(interpreter, crop, input, output)
+                                val flipped = mirror(crop)
+                                val e2 = embed(interpreter, flipped, input, output)
+                                flipped.recycle()
                                 crop.recycle()
+                                val emb = Embeddings.normalize(FloatArray(e1.size) { e1[it] + e2[it] })
                                 val w = bitmap.width.toFloat()
                                 val h = bitmap.height.toFloat()
                                 val area = (box.width() * box.height()) / (w * h)
-                                // Assign to the closest person, or start a new one.
-                                var best: PersonCentroid? = null
-                                var bestSim = -1f
-                                for (p in people) {
-                                    val s = Embeddings.cosine(emb, p.centroid)
-                                    if (s > bestSim) { bestSim = s; best = p }
-                                }
-                                val person = if (best != null && bestSim >= MATCH) best else {
+                                // Assign to the best-fitting person, or start a new one.
+                                val person = FaceMatch.best(emb, groups) ?: run {
                                     val id = index.createPerson(emb)
-                                    PersonCentroid(id, emb, 0, 0f, null).also { people += it }
+                                    FaceMatch.Group(id, emb, 0, ArrayList(), null).also { groups += it }
                                 }
-                                person.centroid = Embeddings.blend(person.centroid, person.count, emb, 1)
-                                person.count += 1
+                                FaceMatch.add(person, emb)
                                 stored += StoredFace(
                                     left = (box.left / w).coerceIn(0f, 1f),
                                     top = (box.top / h).coerceIn(0f, 1f),
@@ -178,9 +184,10 @@ object FaceIndexer {
                         val ids = index.putFaces(m.id, m.dateModified, stored)
                         // Keep each person's cover as their clearest (largest) face.
                         stored.forEachIndexed { i, f ->
-                            val p = people.first { it.id == f.person }
-                            val cover = if (f.area > p.coverArea) { p.coverArea = f.area; ids.getOrNull(i) } else null
-                            index.savePerson(p, cover)
+                            val g = groups.first { it.id == f.person }
+                            val prev = coverAreas[g.id] ?: 0f
+                            val cover = if (f.area > prev) { coverAreas[g.id] = f.area; ids.getOrNull(i) } else null
+                            index.savePerson(PersonCentroid(g.id, g.centroid, g.count, coverAreas[g.id] ?: 0f, g.name), cover)
                         }
                         count++
                         _progress.value = IndexProgress(count, photos.size, true)
@@ -199,33 +206,125 @@ object FaceIndexer {
         }
     }
 
-    /** Joins people whose average face is nearly identical (same person split early on). */
+    private fun prefs(context: Context) = context.getSharedPreferences("faces", Context.MODE_PRIVATE)
+
+    private fun loadGroups(index: SearchIndex): MutableList<FaceMatch.Group> {
+        val ex = index.exemplars()
+        return index.loadPersonCentroids().map {
+            FaceMatch.Group(it.id, it.centroid, it.count, ex[it.id]?.toMutableList() ?: ArrayList(), it.name)
+        }.toMutableList()
+    }
+
+    /** Joins people that turn out to be the same person (split early on). */
     private fun mergeSimilar(index: SearchIndex) {
-        var merged = true
+        val notSame = index.notSamePairs()
         var rounds = 0
-        while (merged && rounds < 20) {
-            merged = false
-            rounds++
-            val people = index.loadPersonCentroids().sortedByDescending { it.count }
-            outer@ for (i in people.indices) {
-                for (j in i + 1 until people.size) {
-                    val a = people[i]
-                    val b = people[j]
-                    if (a.name != null && b.name != null && a.name != b.name) continue
-                    if (Embeddings.cosine(a.centroid, b.centroid) >= MERGE) {
-                        index.mergePersons(from = b.id, into = a.id)
-                        merged = true
-                        break@outer
+        while (rounds++ < 200) {
+            val groups = loadGroups(index).sortedByDescending { it.count }
+            var pair: Pair<FaceMatch.Group, FaceMatch.Group>? = null
+            outer@ for (i in groups.indices) for (j in i + 1 until groups.size) {
+                val a = groups[i]
+                val b = groups[j]
+                if ((minOf(a.id, b.id) to maxOf(a.id, b.id)) in notSame) continue
+                if (FaceMatch.shouldMerge(a, b)) { pair = a to b; break@outer }
+            }
+            val (a, b) = pair ?: break
+            index.mergePersons(from = b.id, into = a.id)
+        }
+    }
+
+    /**
+     * Regroups every face already found using the current rules, keeping the names and
+     * hidden choices the user already made.
+     */
+    private fun regroup(index: SearchIndex) {
+        val faces = index.facesForRegroup()
+        if (faces.isEmpty()) return
+        val old = index.oldPersons().associateBy { it.id }
+        val groups = ArrayList<FaceMatch.Group>()
+        val members = ArrayList<MutableList<SearchIndex.FaceRow>>()
+        for (f in faces) {
+            val g = FaceMatch.best(f.emb, groups)
+            if (g == null) {
+                groups += FaceMatch.Group(groups.size.toLong(), f.emb, 1, mutableListOf(f.emb), null)
+                members += mutableListOf(f)
+            } else {
+                FaceMatch.add(g, f.emb)
+                members[g.id.toInt()] += f
+            }
+        }
+        // Carry names over: each new group takes the most common named old person among its faces.
+        groups.forEachIndexed { i, g ->
+            val tally = members[i].mapNotNull { old[it.person] }.groupingBy { it }.eachCount()
+            g.name = tally.entries.filter { it.key.name != null }.maxByOrNull { it.value }?.key?.name
+        }
+        // Merge groups that are clearly the same person, or that share a name.
+        val alive = BooleanArray(groups.size) { true }
+        var changed = true
+        while (changed) {
+            changed = false
+            loop@ for (i in groups.indices) {
+                if (!alive[i]) continue
+                for (j in i + 1 until groups.size) {
+                    if (!alive[j]) continue
+                    val a = groups[i]
+                    val b = groups[j]
+                    val sameName = a.name != null && a.name.equals(b.name, true)
+                    if (sameName || FaceMatch.shouldMerge(a, b)) {
+                        FaceMatch.absorb(a, b)
+                        members[i].addAll(members[j])
+                        alive[j] = false
+                        changed = true
+                        continue@loop
                     }
                 }
             }
         }
+        val result = groups.indices.filter { alive[it] }.map { i ->
+            val g = groups[i]
+            val m = members[i]
+            val cover = m.maxBy { it.area }
+            val hiddenVotes = m.mapNotNull { old[it.person] }.count { it.hidden }
+            SearchIndex.NewPerson(
+                name = g.name,
+                hidden = hiddenVotes * 2 > m.size,
+                centroid = g.centroid,
+                count = m.size,
+                coverFace = cover.id,
+                coverArea = cover.area,
+                faceIds = m.map { it.id },
+            )
+        }
+        index.rewritePeople(result)
+    }
+
+    /** Pairs of people who might be the same, for the "Same person?" cards. */
+    suspend fun suggestions(context: Context, visible: Set<Long>): List<Pair<Long, Long>> =
+        withContext(Dispatchers.Default) {
+            val index = SearchIndex.get(context.applicationContext)
+            val notSame = index.notSamePairs()
+            val groups = loadGroups(index).filter { it.id in visible }
+            val out = ArrayList<Triple<Long, Long, Float>>()
+            for (i in groups.indices) for (j in i + 1 until groups.size) {
+                val a = groups[i]
+                val b = groups[j]
+                if ((minOf(a.id, b.id) to maxOf(a.id, b.id)) in notSame) continue
+                if (a.name != null && b.name != null) continue
+                val c = FaceMatch.closeness(a, b)
+                if (c >= FaceMatch.SUGGEST) out += Triple(a.id, b.id, c)
+            }
+            out.sortedByDescending { it.third }.take(12).map { it.first to it.second }
+        }
+
+    private fun mirror(src: Bitmap): Bitmap {
+        val m = Matrix().apply { preScale(-1f, 1f) }
+        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
     }
 
     /** Square crop around the face with some margin, rotated so the eyes are level. */
     private fun cropFace(src: Bitmap, face: Face): Bitmap? {
         val box = face.boundingBox
-        val size = max(box.width(), box.height()) * 1.25f
+        val size = max(box.width(), box.height()) * 1.1f
         val cx = box.exactCenterX()
         val cy = box.exactCenterY()
         if (size < 20f) return null

@@ -194,8 +194,10 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (indexJob?.isActive == true) return
         indexJob = viewModelScope.launch {
-            Indexer.run(getApplication(), items)
-            FaceIndexer.run(getApplication(), items)
+            // Search analysis and face grouping run side by side.
+            val labels = launch { Indexer.run(getApplication(), items) }
+            val faces = launch { FaceIndexer.run(getApplication(), items) }
+            labels.join(); faces.join()
         }
     }
 
@@ -234,6 +236,39 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun renamePerson(id: Long, name: String?) = peopleOp { it.renamePerson(id, name) }
+
+    // "Same person?" suggestions
+    private val _suggestions = MutableStateFlow<List<Pair<Long, Long>>>(emptyList())
+    val suggestions: StateFlow<List<Pair<Long, Long>>> = _suggestions.asStateFlow()
+
+    fun loadSuggestions() {
+        viewModelScope.launch {
+            val visible = _people.value
+                .filter { (it.name != null || it.count >= 3) && !it.hidden }
+                .mapTo(HashSet()) { it.id }
+            _suggestions.value = FaceIndexer.suggestions(getApplication(), visible)
+        }
+    }
+
+    fun answerSuggestion(a: Long, b: Long, same: Boolean) {
+        _suggestions.value = _suggestions.value.filterNot { it == (a to b) }
+        if (same) {
+            val pa = _people.value.firstOrNull { it.id == a }
+            val pb = _people.value.firstOrNull { it.id == b }
+            // Keep the named (or larger) person.
+            val keepA = when {
+                pa?.name != null && pb?.name == null -> true
+                pb?.name != null && pa?.name == null -> false
+                else -> (pa?.count ?: 0) >= (pb?.count ?: 0)
+            }
+            val into = if (keepA) a else b
+            val from = if (keepA) b else a
+            _suggestions.value = _suggestions.value.filterNot { it.first == from || it.second == from }
+            peopleOp { it.mergePersons(from = from, into = into) }
+        } else {
+            peopleOp { it.notSame(a, b) }
+        }
+    }
 
     /** Names a person; if someone else already has that name, folds them into this person. */
     fun nameAndMerge(id: Long, name: String, mergeFrom: Long?) = peopleOp {

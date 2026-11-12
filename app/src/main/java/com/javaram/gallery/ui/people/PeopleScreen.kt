@@ -93,7 +93,9 @@ fun PeopleScreen(vm: GalleryViewModel, onBack: () -> Unit, onOpenPerson: (Long) 
     val collapsed by remember { derivedStateOf { state.firstVisibleItemIndex > 0 || state.firstVisibleItemScrollOffset > 160 } }
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 40.dp
 
+    val suggestions by vm.suggestions.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.reloadPeople() }
+    LaunchedEffect(people) { vm.loadSuggestions() }
 
     Box(Modifier.fillMaxSize().background(c.background)) {
         Box(Modifier.fillMaxSize().haze(haze)) {
@@ -113,6 +115,16 @@ fun PeopleScreen(vm: GalleryViewModel, onBack: () -> Unit, onOpenPerson: (Long) 
                         )
                         if (!progress.complete && progress.total > 0) {
                             FaceProgressCard(progress.done, progress.total)
+                        }
+                        val pair = suggestions.firstOrNull()
+                        val pa = pair?.let { p -> people.firstOrNull { it.id == p.first } }
+                        val pb = pair?.let { p -> people.firstOrNull { it.id == p.second } }
+                        if (!showHidden && pair != null && pa != null && pb != null) {
+                            SamePersonCard(
+                                a = pa, b = pb, byId = byId,
+                                remaining = suggestions.size,
+                                onAnswer = { same -> vm.answerSuggestion(pair.first, pair.second, same) },
+                            )
                         }
                     }
                 }
@@ -257,5 +269,53 @@ fun FaceProgressCard(done: Int, total: Int) {
             style = MaterialTheme.typography.bodySmall,
             color = c.secondary,
         )
+    }
+}
+
+@Composable
+fun SamePersonCard(
+    a: Person,
+    b: Person,
+    byId: Map<Long, com.javaram.gallery.data.Media>,
+    remaining: Int,
+    onAnswer: (Boolean) -> Unit,
+) {
+    val c = GalleryTheme.colors
+    Column(
+        Modifier
+            .padding(horizontal = 2.dp, vertical = 8.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(c.card)
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Same person?", style = MaterialTheme.typography.titleMedium, color = c.content, modifier = Modifier.weight(1f))
+            Text("$remaining to review", style = MaterialTheme.typography.bodySmall, color = c.secondary)
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                FaceAvatar(a, byId, 84.dp)
+                Text(a.name ?: "${countLabel(a.count)} photos", style = MaterialTheme.typography.bodySmall, color = c.secondary, modifier = Modifier.padding(top = 6.dp))
+            }
+            Text("=", style = MaterialTheme.typography.headlineSmall, color = c.secondary, modifier = Modifier.padding(horizontal = 18.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                FaceAvatar(b, byId, 84.dp)
+                Text(b.name ?: "${countLabel(b.count)} photos", style = MaterialTheme.typography.bodySmall, color = c.secondary, modifier = Modifier.padding(top = 6.dp))
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                Modifier.weight(1f).height(44.dp).background(c.divider, CircleShape).pressable { onAnswer(false) },
+                contentAlignment = Alignment.Center,
+            ) { Text("No", style = MaterialTheme.typography.titleSmall, color = c.content) }
+            Box(
+                Modifier.weight(1f).height(44.dp).background(Accent, CircleShape).pressable { onAnswer(true) },
+                contentAlignment = Alignment.Center,
+            ) { Text("Yes, same", style = MaterialTheme.typography.titleSmall, color = androidx.compose.ui.graphics.Color.White) }
+        }
     }
 }
