@@ -24,7 +24,7 @@ data class IndexEntry(
 
 /** Small SQLite store holding what the indexer learned about each photo. Everything stays on the phone. */
 class SearchIndex private constructor(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "search.db", null, 1) {
+    SQLiteOpenHelper(context.applicationContext, "search.db", null, 2) {
 
     companion object {
         @Volatile private var instance: SearchIndex? = null
@@ -48,12 +48,208 @@ class SearchIndex private constructor(context: Context) :
             )"""
         )
         db.execSQL("CREATE TABLE geo(k TEXT PRIMARY KEY, area TEXT, city TEXT, state TEXT, country TEXT)")
+        createFaceTables(db)
+    }
+
+    private fun createFaceTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS faces(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_id INTEGER NOT NULL,
+                l REAL, t REAL, r REAL, b REAL,
+                area REAL,
+                emb BLOB,
+                person INTEGER NOT NULL DEFAULT -1
+            )"""
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS faces_media ON faces(media_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS faces_person ON faces(person)")
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS persons(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                hidden INTEGER NOT NULL DEFAULT 0,
+                centroid BLOB,
+                n INTEGER NOT NULL DEFAULT 0,
+                cover_face INTEGER,
+                cover_area REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        db.execSQL("CREATE TABLE IF NOT EXISTS face_done(media_id INTEGER PRIMARY KEY, modified INTEGER NOT NULL)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS idx")
-        db.execSQL("DROP TABLE IF EXISTS geo")
-        onCreate(db)
+        if (oldVersion < 2) createFaceTables(db)
+    }
+
+    // ---------------- Faces & people ----------------
+
+    fun faceDoneVersions(): Map<Long, Long> {
+        val out = HashMap<Long, Long>()
+        readableDatabase.rawQuery("SELECT media_id, modified FROM face_done", null).use { c ->
+            while (c.moveToNext()) out[c.getLong(0)] = c.getLong(1)
+        }
+        return out
+    }
+
+    fun deleteMissingFaces(keep: Set<Long>) {
+        val gone = faceDoneVersions().keys.filter { it !in keep }
+        if (gone.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            gone.chunked(500).forEach { chunk ->
+                val ids = chunk.joinToString(",")
+                db.execSQL("DELETE FROM faces WHERE media_id IN ($ids)")
+                db.execSQL("DELETE FROM face_done WHERE media_id IN ($ids)")
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Saves the faces found in one photo, replacing any earlier result for it. */
+    fun putFaces(mediaId: Long, modified: Long, faces: List<StoredFace>): List<Long> {
+        val db = writableDatabase
+        val ids = ArrayList<Long>()
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM faces WHERE media_id = $mediaId")
+            for (f in faces) {
+                val v = ContentValues().apply {
+                    put("media_id", mediaId)
+                    put("l", f.left); put("t", f.top); put("r", f.right); put("b", f.bottom)
+                    put("area", f.area)
+                    put("emb", Embeddings.toBytes(f.embedding))
+                    put("person", f.person)
+                }
+                ids += db.insert("faces", null, v)
+            }
+            val done = ContentValues().apply { put("media_id", mediaId); put("modified", modified) }
+            db.insertWithOnConflict("face_done", null, done, SQLiteDatabase.CONFLICT_REPLACE)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return ids
+    }
+
+    fun loadPersonCentroids(): MutableList<PersonCentroid> {
+        val out = ArrayList<PersonCentroid>()
+        readableDatabase.rawQuery("SELECT id, centroid, n, cover_area, name FROM persons", null).use { c ->
+            while (c.moveToNext()) {
+                val blob = c.getBlob(1) ?: continue
+                out += PersonCentroid(c.getLong(0), Embeddings.fromBytes(blob), c.getInt(2), c.getFloat(3), c.getString(4))
+            }
+        }
+        return out
+    }
+
+    fun createPerson(centroid: FloatArray): Long {
+        val v = ContentValues().apply { put("centroid", Embeddings.toBytes(centroid)); put("n", 0) }
+        return writableDatabase.insert("persons", null, v)
+    }
+
+    fun savePerson(p: PersonCentroid, coverFace: Long?) {
+        val v = ContentValues().apply {
+            put("centroid", Embeddings.toBytes(p.centroid))
+            put("n", p.count)
+            put("cover_area", p.coverArea)
+            if (coverFace != null) put("cover_face", coverFace)
+        }
+        writableDatabase.update("persons", v, "id = ?", arrayOf(p.id.toString()))
+    }
+
+    fun persons(): List<Person> {
+        val out = ArrayList<Person>()
+        readableDatabase.rawQuery(
+            """SELECT p.id, p.name, p.hidden, COUNT(DISTINCT f.media_id) AS c,
+                      cf.media_id, cf.l, cf.t, cf.r, cf.b
+               FROM persons p
+               JOIN faces f ON f.person = p.id
+               LEFT JOIN faces cf ON cf.id = p.cover_face
+               GROUP BY p.id
+               ORDER BY (p.name IS NULL), c DESC""",
+            null,
+        ).use { c ->
+            while (c.moveToNext()) {
+                out += Person(
+                    id = c.getLong(0),
+                    name = c.getString(1),
+                    hidden = c.getInt(2) == 1,
+                    count = c.getInt(3),
+                    coverMediaId = if (c.isNull(4)) null else c.getLong(4),
+                    coverBox = if (c.isNull(5)) null else floatArrayOf(c.getFloat(5), c.getFloat(6), c.getFloat(7), c.getFloat(8)),
+                )
+            }
+        }
+        return out
+    }
+
+    fun mediaForPerson(personId: Long): Set<Long> {
+        val out = HashSet<Long>()
+        readableDatabase.rawQuery("SELECT DISTINCT media_id FROM faces WHERE person = ?", arrayOf(personId.toString())).use { c ->
+            while (c.moveToNext()) out += c.getLong(0)
+        }
+        return out
+    }
+
+    /** media id → names of the named people in it. */
+    fun namedPeopleByMedia(): Map<Long, Set<String>> {
+        val out = HashMap<Long, MutableSet<String>>()
+        readableDatabase.rawQuery(
+            "SELECT f.media_id, p.name FROM faces f JOIN persons p ON p.id = f.person WHERE p.name IS NOT NULL AND p.hidden = 0",
+            null,
+        ).use { c ->
+            while (c.moveToNext()) out.getOrPut(c.getLong(0)) { HashSet() }.add(c.getString(1))
+        }
+        return out
+    }
+
+    fun renamePerson(id: Long, name: String?) {
+        val v = ContentValues().apply { if (name.isNullOrBlank()) putNull("name") else put("name", name.trim()) }
+        writableDatabase.update("persons", v, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun setHidden(id: Long, hidden: Boolean) {
+        val v = ContentValues().apply { put("hidden", if (hidden) 1 else 0) }
+        writableDatabase.update("persons", v, "id = ?", arrayOf(id.toString()))
+    }
+
+    /** Moves every face of [from] into [into] and blends their fingerprints. */
+    fun mergePersons(from: Long, into: Long) {
+        if (from == into) return
+        val all = loadPersonCentroids()
+        val a = all.firstOrNull { it.id == from } ?: return
+        val b = all.firstOrNull { it.id == into } ?: return
+        val merged = Embeddings.blend(b.centroid, b.count, a.centroid, a.count)
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("UPDATE faces SET person = $into WHERE person = $from")
+            val v = ContentValues().apply {
+                put("centroid", Embeddings.toBytes(merged))
+                put("n", a.count + b.count)
+                if (b.name == null && a.name != null) put("name", a.name)
+            }
+            db.update("persons", v, "id = ?", arrayOf(into.toString()))
+            if (a.coverArea > b.coverArea) {
+                db.execSQL("UPDATE persons SET cover_face = (SELECT cover_face FROM persons WHERE id = $from), cover_area = ${a.coverArea} WHERE id = $into")
+            }
+            db.delete("persons", "id = ?", arrayOf(from.toString()))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** "Not this person": detach the person's faces in these photos. */
+    fun removeFromPerson(personId: Long, mediaIds: Collection<Long>) {
+        if (mediaIds.isEmpty()) return
+        writableDatabase.execSQL(
+            "UPDATE faces SET person = -2 WHERE person = $personId AND media_id IN (${mediaIds.joinToString(",")})"
+        )
     }
 
     fun versions(): Map<Long, Long> {
@@ -132,5 +328,62 @@ class SearchIndex private constructor(context: Context) :
             put("k", key); put("area", p.area); put("city", p.city); put("state", p.state); put("country", p.country)
         }
         writableDatabase.insertWithOnConflict("geo", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+}
+
+data class StoredFace(
+    val left: Float, val top: Float, val right: Float, val bottom: Float,
+    val area: Float,
+    val embedding: FloatArray,
+    val person: Long,
+)
+
+data class PersonCentroid(
+    val id: Long,
+    var centroid: FloatArray,
+    var count: Int,
+    var coverArea: Float,
+    val name: String?,
+)
+
+data class Person(
+    val id: Long,
+    val name: String?,
+    val hidden: Boolean,
+    val count: Int,
+    val coverMediaId: Long?,
+    /** Face box (left, top, right, bottom) as fractions of the photo. */
+    val coverBox: FloatArray?,
+)
+
+object Embeddings {
+    fun toBytes(v: FloatArray): ByteArray {
+        val bb = java.nio.ByteBuffer.allocate(v.size * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        v.forEach { bb.putFloat(it) }
+        return bb.array()
+    }
+
+    fun fromBytes(b: ByteArray): FloatArray {
+        val bb = java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        return FloatArray(b.size / 4) { bb.getFloat() }
+    }
+
+    fun normalize(v: FloatArray): FloatArray {
+        var s = 0.0
+        for (x in v) s += x * x
+        val n = kotlin.math.sqrt(s).toFloat().coerceAtLeast(1e-6f)
+        return FloatArray(v.size) { v[it] / n }
+    }
+
+    fun cosine(a: FloatArray, b: FloatArray): Float {
+        var s = 0f
+        for (i in a.indices) s += a[i] * b[i]
+        return s
+    }
+
+    fun blend(a: FloatArray, na: Int, b: FloatArray, nb: Int): FloatArray {
+        val wa = na.coerceAtLeast(1).toFloat()
+        val wb = nb.coerceAtLeast(1).toFloat()
+        return normalize(FloatArray(a.size) { a[it] * wa + b[it] * wb })
     }
 }

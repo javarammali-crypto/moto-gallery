@@ -14,6 +14,8 @@ import com.javaram.gallery.data.AlbumKeys
 import com.javaram.gallery.data.ExifDetails
 import com.javaram.gallery.data.Media
 import com.javaram.gallery.data.MediaRepository
+import com.javaram.gallery.search.FaceIndexer
+import com.javaram.gallery.search.Person
 import com.javaram.gallery.search.IndexEntry
 import com.javaram.gallery.search.IndexProgress
 import com.javaram.gallery.search.Indexer
@@ -187,11 +189,60 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        if (peopleWatch == null) {
+            peopleWatch = viewModelScope.launch { FaceIndexer.generation.collect { reloadPeople() } }
+        }
         if (indexJob?.isActive == true) return
         indexJob = viewModelScope.launch {
             Indexer.run(getApplication(), items)
+            FaceIndexer.run(getApplication(), items)
         }
     }
+
+    // --- People ---
+    val faceProgress: StateFlow<IndexProgress> = FaceIndexer.progress
+    private var peopleWatch: Job? = null
+    private val _people = MutableStateFlow<List<Person>>(emptyList())
+    val people: StateFlow<List<Person>> = _people.asStateFlow()
+    private val _peopleByMedia = MutableStateFlow<Map<Long, Set<String>>>(emptyMap())
+    val peopleByMedia: StateFlow<Map<Long, Set<String>>> = _peopleByMedia.asStateFlow()
+    private val _peopleVersion = MutableStateFlow(0)
+    val peopleVersion: StateFlow<Int> = _peopleVersion.asStateFlow()
+
+    fun reloadPeople() {
+        viewModelScope.launch {
+            val db = SearchIndex.get(getApplication())
+            val (list, byMedia) = withContext(Dispatchers.IO) { db.persons() to db.namedPeopleByMedia() }
+            _people.value = list
+            _peopleByMedia.value = byMedia
+            _peopleVersion.value++
+        }
+    }
+
+    suspend fun mediaForPerson(id: Long): Set<Long> =
+        withContext(Dispatchers.IO) { SearchIndex.get(getApplication()).mediaForPerson(id) }
+
+    /** Returns the other person already using this name, if any (naming them the same merges them). */
+    fun personWithName(name: String, except: Long): Person? =
+        _people.value.firstOrNull { it.id != except && it.name?.equals(name.trim(), ignoreCase = true) == true }
+
+    private fun peopleOp(block: (SearchIndex) -> Unit) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { block(SearchIndex.get(getApplication())) }
+            reloadPeople()
+        }
+    }
+
+    fun renamePerson(id: Long, name: String?) = peopleOp { it.renamePerson(id, name) }
+
+    /** Names a person; if someone else already has that name, folds them into this person. */
+    fun nameAndMerge(id: Long, name: String, mergeFrom: Long?) = peopleOp {
+        if (mergeFrom != null) it.mergePersons(from = mergeFrom, into = id)
+        it.renamePerson(id, name)
+    }
+    fun mergePersons(from: Long, into: Long) = peopleOp { it.mergePersons(from, into) }
+    fun setPersonHidden(id: Long, hidden: Boolean) = peopleOp { it.setHidden(id, hidden) }
+    fun removeFromPerson(id: Long, mediaIds: Collection<Long>) = peopleOp { it.removeFromPerson(id, mediaIds) }
 
     fun reloadIndex() {
         viewModelScope.launch { _index.value = withContext(Dispatchers.IO) { SearchIndex.get(getApplication()).all() } }

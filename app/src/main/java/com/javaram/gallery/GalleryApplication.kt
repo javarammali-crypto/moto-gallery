@@ -25,6 +25,8 @@ class GalleryApplication : Application(), ImageLoaderFactory {
             .components {
                 add(ThumbKeyer())
                 add(ThumbFetcher.Factory())
+                add(com.javaram.gallery.data.FaceThumbKeyer())
+                add(com.javaram.gallery.data.FaceThumbFetcher.Factory())
                 add(VideoFrameDecoder.Factory())
             }
             .crossfade(180)

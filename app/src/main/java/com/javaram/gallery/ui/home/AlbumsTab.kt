@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -75,6 +76,9 @@ fun AlbumsTab(
     onOpenAlbum: (String) -> Unit,
     onOpenTrash: () -> Unit,
     onAlbumMenu: (Album) -> Unit,
+    people: List<com.javaram.gallery.search.Person> = emptyList(),
+    onOpenPeople: () -> Unit = {},
+    onOpenPerson: (Long) -> Unit = {},
 ) {
     val c = GalleryTheme.colors
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 110.dp
@@ -101,6 +105,9 @@ fun AlbumsTab(
     ) {
         item(span = { GridItemSpan(maxLineSpan) }, key = "header") {
             LargeHeader("Albums", "${albums.size} albums")
+        }
+        item(span = { GridItemSpan(maxLineSpan) }, key = "people") {
+            PeopleRow(people, all, onOpenPeople, onOpenPerson)
         }
         items(quick, key = { "q-" + it.key }) { q ->
             AlbumTile(
@@ -225,6 +232,63 @@ private fun AlbumTile(
                 color = c.secondary,
                 modifier = Modifier.padding(start = 2.dp),
             )
+        }
+    }
+}
+
+@Composable
+fun PeopleRow(
+    people: List<com.javaram.gallery.search.Person>,
+    all: List<Media>,
+    onOpenPeople: () -> Unit,
+    onOpenPerson: (Long) -> Unit,
+) {
+    val c = GalleryTheme.colors
+    val shown = remember(people) { com.javaram.gallery.ui.people.visiblePeople(people, showHidden = false).take(12) }
+    val byId = remember(all) { all.associateBy { it.id } }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 4.dp, top = 6.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("People", style = MaterialTheme.typography.headlineSmall, color = c.content, modifier = Modifier.weight(1f))
+            Text(
+                "See all",
+                style = MaterialTheme.typography.titleSmall,
+                color = com.javaram.gallery.ui.theme.Accent,
+                modifier = Modifier.clip(RoundedCornerShape(50)).combinedClickable(onClick = onOpenPeople).padding(8.dp),
+            )
+        }
+        if (shown.isEmpty()) {
+            Text(
+                "Faces are being grouped in the background. People will show up here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.secondary,
+                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
+            )
+        } else {
+            androidx.compose.foundation.lazy.LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(horizontal = 2.dp),
+            ) {
+                items(shown.size, key = { shown[it].id }) { i ->
+                    val p = shown[i]
+                    Column(
+                        Modifier.width(76.dp).combinedClickable(onClick = { onOpenPerson(p.id) }),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        com.javaram.gallery.ui.people.FaceAvatar(p, byId, 72.dp)
+                        Text(
+                            p.name ?: "Add name",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (p.name == null) c.secondary else c.content,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+            }
         }
     }
 }

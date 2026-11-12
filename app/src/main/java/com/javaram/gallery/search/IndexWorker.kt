@@ -16,7 +16,9 @@ class IndexWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val items = MediaRepository(applicationContext).load(trashed = false)
         if (items.isEmpty()) return Result.success()
         // WorkManager gives us about 10 minutes; stop a little before that.
-        Indexer.run(applicationContext, items, deadlineMillis = System.currentTimeMillis() + 8 * 60_000L)
+        val deadline = System.currentTimeMillis() + 8 * 60_000L
+        Indexer.run(applicationContext, items, deadlineMillis = deadline)
+        FaceIndexer.run(applicationContext, items, deadlineMillis = deadline)
         return Result.success()
     }
 

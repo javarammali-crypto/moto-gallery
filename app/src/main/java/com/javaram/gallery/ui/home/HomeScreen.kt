@@ -128,6 +128,8 @@ fun HomeScreen(
     onOpenAlbum: (String) -> Unit,
     onOpenTrash: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenPeople: () -> Unit,
+    onOpenPerson: (Long) -> Unit,
 ) {
     val context = LocalContext.current
     val haze = remember { HazeState() }
@@ -141,6 +143,7 @@ fun HomeScreen(
     val canManage by vm.canManageMedia.collectAsStateWithLifecycle()
     val bannerDismissed by vm.bannerDismissed.collectAsStateWithLifecycle()
     val update by vm.update.collectAsStateWithLifecycle()
+    val people by vm.people.collectAsStateWithLifecycle()
 
     var selectionMode by rememberSaveable { mutableStateOf(false) }
     var selection by remember { mutableStateOf(emptySet<Long>()) }
@@ -232,6 +235,9 @@ fun HomeScreen(
                         onOpenAlbum = onOpenAlbum,
                         onOpenTrash = onOpenTrash,
                         onAlbumMenu = { sheet = HomeSheet.AlbumMenu(it) },
+                        people = people,
+                        onOpenPeople = onOpenPeople,
+                        onOpenPerson = onOpenPerson,
                     )
                     HomeTab.Create -> CreateTab(state = createState)
                 }

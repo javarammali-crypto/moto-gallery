@@ -98,7 +98,12 @@ object SearchEngine {
         else -> t
     }
 
-    fun search(query: String, media: List<Media>, index: Map<Long, IndexEntry>): List<Media> {
+    fun search(
+        query: String,
+        media: List<Media>,
+        index: Map<Long, IndexEntry>,
+        people: Map<Long, Set<String>> = emptyMap(),
+    ): List<Media> {
         val tokens = query.lowercase(Locale.getDefault())
             .split(Regex("""\s+"""))
             .map { it.trim() }
@@ -134,7 +139,13 @@ object SearchEngine {
             if (date != null && !date.test(m.dateTaken.toLocalDate())) return@filter false
             if (words.isEmpty()) return@filter true
             val e = index[m.id]
-            words.all { w -> matches(w, m, e) }
+            val names = people[m.id]
+            if (names != null) {
+                // A person's full name may span several words ("Riya Shah").
+                val joined = words.joinToString(" ")
+                if (names.any { it.equals(joined, true) || it.contains(joined, true) }) return@filter true
+            }
+            words.all { w -> matches(w, m, e) || names?.any { it.contains(w, true) } == true }
         }
     }
 

@@ -107,6 +107,8 @@ import com.javaram.gallery.ui.components.shareMedia
 import com.javaram.gallery.ui.components.toast
 import com.javaram.gallery.ui.home.BarAction
 import com.javaram.gallery.ui.theme.GalleryTheme
+import com.javaram.gallery.util.Wallpaper
+import com.javaram.gallery.util.WallpaperTarget
 import com.javaram.gallery.util.viewerTitle
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
@@ -179,6 +181,7 @@ fun ViewerOverlay(
         var showInfo by remember { mutableStateOf(false) }
         var moreAnchor by remember { mutableStateOf<Rect?>(null) }
         var showMore by remember { mutableStateOf(false) }
+        var wallpaperFor by remember { mutableStateOf<Media?>(null) }
         var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
         val zoomStates = remember { mutableStateMapOf<Long, ZoomableImageState>() }
 
@@ -279,6 +282,7 @@ fun ViewerOverlay(
 
         BackHandler(enabled = phase != Phase.Closing) {
             when {
+                wallpaperFor != null -> wallpaperFor = null
                 confirm != null -> confirm = null
                 showMore -> showMore = false
                 showInfo -> showInfo = false
@@ -558,12 +562,33 @@ fun ViewerOverlay(
             state = haze,
             anchor = moreAnchor,
             placement = PopupAnchor.AboveEnd,
-            options = if (m == null) emptyList() else listOf(
-                SheetOption("Set as…", Icons.Outlined.Wallpaper) { setAs(context, m) },
-                SheetOption("Open with…", Icons.Outlined.OpenInNew) { openWith(context, m) },
-                SheetOption("Details", Icons.Outlined.Info) { showInfo = true },
-            ),
+            options = if (m == null) emptyList() else buildList {
+                if (!m.isVideo) add(SheetOption("Set as wallpaper", Icons.Outlined.Wallpaper) { wallpaperFor = m })
+                add(SheetOption("Use in another app…", Icons.Outlined.OpenInNew) { setAs(context, m) })
+                add(SheetOption("Open with…", Icons.Outlined.OpenInNew) { openWith(context, m) })
+                add(SheetOption("Details", Icons.Outlined.Info) { showInfo = true })
+            },
             onDismiss = { showMore = false },
+        )
+
+        val wp = wallpaperFor
+        GlassPopupMenu(
+            visible = wp != null,
+            state = haze,
+            anchor = moreAnchor,
+            placement = PopupAnchor.AboveEnd,
+            title = "Set as wallpaper on",
+            options = WallpaperTarget.entries.map { target ->
+                SheetOption(target.label, Icons.Outlined.Wallpaper) {
+                    val media = wp ?: return@SheetOption
+                    toast(context, "Setting wallpaper…")
+                    scope.launch {
+                        val ok = Wallpaper.set(context, media, target)
+                        toast(context, if (ok) "Wallpaper set" else "Couldn't set this photo as wallpaper")
+                    }
+                }
+            },
+            onDismiss = { wallpaperFor = null },
         )
 
         GlassDialog(request = confirm, state = haze, onDismiss = { confirm = null })

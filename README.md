@@ -23,8 +23,13 @@ A personal Android gallery app for the Moto Edge 70 Fusion, styled after the Col
 - Clearer glass with stronger blur and a specular edge
 - In-app updates from GitHub Releases
 
+## Phase 3
+- People: faces found and grouped on the phone (ML Kit + FaceNet, see `models/NOTICE.md`), name people, combine, hide, "not this person"
+- Search by a person's name
+- Set any photo as home, lock or both wallpapers
+- Back from a search result returns to the search page
+
 ## Coming next
-3. People: face grouping and naming
 4. Editor: crop, adjust, filters, background removal
 5. Private safe, cleanup, collage, memories
 

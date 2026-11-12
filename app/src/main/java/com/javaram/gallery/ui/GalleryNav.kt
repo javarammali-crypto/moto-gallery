@@ -18,6 +18,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.navArgument
+import com.javaram.gallery.ui.people.PeopleScreen
+import com.javaram.gallery.ui.people.PersonScreen
 import com.javaram.gallery.ui.search.PlacesMapScreen
 import com.javaram.gallery.ui.search.SearchScreen
 import androidx.navigation.compose.composable
@@ -34,6 +36,9 @@ object Routes {
     const val TRASH = "trash"
     const val SEARCH = "search?q={q}"
     const val MAP = "map"
+    const val PEOPLE = "people"
+    const val PERSON = "person/{id}"
+    fun person(id: Long) = "person/$id"
     fun album(key: String) = "album/$key"
     fun search(q: String = "") = "search?q=" + android.net.Uri.encode(q)
 }
@@ -58,6 +63,8 @@ fun GalleryNav(vm: GalleryViewModel) {
                     onOpenAlbum = { key -> nav.navigate(Routes.album(key)) },
                     onOpenTrash = { nav.navigate(Routes.TRASH) },
                     onOpenSearch = { nav.navigate(Routes.search()) },
+                    onOpenPeople = { nav.navigate(Routes.PEOPLE) },
+                    onOpenPerson = { nav.navigate(Routes.person(it)) },
                 )
             }
             composable(Routes.ALBUM) { entry ->
@@ -76,6 +83,24 @@ fun GalleryNav(vm: GalleryViewModel) {
                     initialQuery = entry.arguments?.getString("q") ?: "",
                     onBack = { nav.popBackStack() },
                     onOpenMap = { nav.navigate(Routes.MAP) },
+                    onOpenPerson = { nav.navigate(Routes.person(it)) },
+                )
+            }
+            composable(Routes.PEOPLE) {
+                PeopleScreen(
+                    vm = vm,
+                    onBack = { nav.popBackStack() },
+                    onOpenPerson = { nav.navigate(Routes.person(it)) },
+                )
+            }
+            composable(
+                Routes.PERSON,
+                arguments = listOf(navArgument("id") { type = NavType.LongType }),
+            ) { entry ->
+                PersonScreen(
+                    vm = vm,
+                    personId = entry.arguments?.getLong("id") ?: -1L,
+                    onBack = { nav.popBackStack() },
                 )
             }
             composable(Routes.MAP) {

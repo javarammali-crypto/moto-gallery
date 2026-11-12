@@ -1,5 +1,6 @@
 package com.javaram.gallery.ui.search
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -103,6 +104,7 @@ fun SearchScreen(
     initialQuery: String,
     onBack: () -> Unit,
     onOpenMap: () -> Unit,
+    onOpenPerson: (Long) -> Unit,
 ) {
     val c = GalleryTheme.colors
     val haze = remember { HazeState() }
@@ -111,6 +113,8 @@ fun SearchScreen(
     val progress by vm.indexProgress.collectAsStateWithLifecycle()
     val recent by vm.recentSearches.collectAsStateWithLifecycle()
     val columns by vm.columns.collectAsStateWithLifecycle()
+    val people by vm.people.collectAsStateWithLifecycle()
+    val peopleByMedia by vm.peopleByMedia.collectAsStateWithLifecycle()
 
     var query by rememberSaveable { mutableStateOf(initialQuery) }
     var results by remember { mutableStateOf<List<Media>?>(null) }
@@ -129,11 +133,11 @@ fun SearchScreen(
         if (initialQuery.isEmpty()) runCatching { focus.requestFocus() }
     }
 
-    LaunchedEffect(query, all, index) {
+    LaunchedEffect(query, all, index, peopleByMedia) {
         if (query.isBlank()) { results = null; searching = false; return@LaunchedEffect }
         searching = true
         delay(220)
-        results = withContext(Dispatchers.Default) { SearchEngine.search(query, all, index) }
+        results = withContext(Dispatchers.Default) { SearchEngine.search(query, all, index, peopleByMedia) }
         searching = false
     }
 
@@ -145,6 +149,13 @@ fun SearchScreen(
     }
     val monthsList by produceState(emptyList<Suggestion>(), all) {
         value = withContext(Dispatchers.Default) { SearchEngine.monthSuggestions(all) }
+    }
+
+    // Back from a result list returns to the search page rather than leaving search.
+    BackHandler(enabled = session == null && query.isNotEmpty() && query != initialQuery) {
+        query = ""
+        keyboard?.hide()
+        focusManager.clearFocus()
     }
 
     fun runQuery(q: String) {
@@ -198,6 +209,33 @@ fun SearchScreen(
                                 item { Chip("Last year", Icons.Outlined.CalendarMonth) { runQuery("last year") } }
                             }
                         } }
+                        val named = people.filter { it.name != null && !it.hidden }
+                        if (named.isNotEmpty()) {
+                            item { Column {
+                                SectionTitle("People")
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 16.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                ) {
+                                    items(named, key = { it.id }) { p ->
+                                        Column(
+                                            Modifier.width(72.dp).pressable { onOpenPerson(p.id) },
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                        ) {
+                                            com.javaram.gallery.ui.people.FaceAvatar(p, byId, 68.dp)
+                                            Text(
+                                                p.name ?: "",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = c.content,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.padding(top = 6.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            } }
+                        }
                         item { Column {
                             SectionTitle("Places", action = "Map", actionIcon = Icons.Outlined.Map, onAction = onOpenMap)
                             if (places.isEmpty()) {
