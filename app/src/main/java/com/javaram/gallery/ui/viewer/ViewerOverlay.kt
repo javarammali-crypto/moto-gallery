@@ -56,6 +56,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,6 +65,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.blur
+import androidx.compose.foundation.background
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -180,7 +183,28 @@ fun ViewerOverlay(
         var morphMedia by remember { mutableStateOf<Media?>(null) }
         val drag = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
         var chrome by remember { mutableStateOf(true) }
-        var showInfo by remember { mutableStateOf(false) }
+        // Details sheet: 0 = hidden, 1 = open. Follows the finger while swiping up.
+        val info = remember { Animatable(0f) }
+        var panelH by remember { mutableFloatStateOf(h * 0.45f) }
+        val showInfo = info.targetValue > 0.5f || info.value > 0.01f
+        val infoSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 360f)
+        fun openInfo() {
+            chrome = true
+            scope.launch { info.animateTo(1f, infoSpring) }
+        }
+        fun closeInfo() {
+            scope.launch { info.animateTo(0f, infoSpring) }
+        }
+        fun settleInfo(velocity: Float) {
+            // velocity is in px/s along y (negative = upward)
+            val target = when {
+                velocity < -600f -> 1f
+                velocity > 600f -> 0f
+                info.value > 0.4f -> 1f
+                else -> 0f
+            }
+            scope.launch { info.animateTo(target, infoSpring, initialVelocity = -velocity / panelH.coerceAtLeast(1f)) }
+        }
         var moreAnchor by remember { mutableStateOf<Rect?>(null) }
         var showMore by remember { mutableStateOf(false) }
         var wallpaperFor by remember { mutableStateOf<Media?>(null) }
@@ -251,7 +275,7 @@ fun ViewerOverlay(
             val from = zoomedBounds ?: draggedRect(m)
             val bgFrom = if (phase == Phase.Open) dragBg() else lerp(morph?.bgFrom ?: 1f, morph?.bgTo ?: 1f, progress.value)
             chrome = false
-            showInfo = false
+            scope.launch { info.snapTo(0f) }
             showMore = false
             scope.launch {
                 morphMedia = m
@@ -304,7 +328,7 @@ fun ViewerOverlay(
                 wallpaperFor != null -> wallpaperFor = null
                 confirm != null -> confirm = null
                 showMore -> showMore = false
-                showInfo -> showInfo = false
+                showInfo -> closeInfo()
                 else -> close()
             }
         }
@@ -366,6 +390,7 @@ fun ViewerOverlay(
                         var total = Offset.Zero
                         var started = false
                         var up = false
+                        var infoDrag = false
                         var cancelled = false
                         while (true) {
                             val ev = awaitPointerEvent(PointerEventPass.Initial)
@@ -380,27 +405,28 @@ fun ViewerOverlay(
                                     if (abs(total.y) > abs(total.x) * 1.15f) {
                                         started = true
                                         up = total.y < 0f
-                                        if (!up) chrome = false
+                                        // Up opens details; with details open, both directions move the sheet.
+                                        infoDrag = up || info.value > 0.01f
+                                        if (!infoDrag) chrome = false
                                     } else return@awaitEachGesture
                                 }
                             }
                             if (started) {
                                 ch.consume()
-                                val target = if (up) {
-                                    // Resist upward: the photo nudges up a little, then details open.
-                                    Offset(0f, (drag.value.y + delta.y * 0.4f).coerceIn(-h * 0.18f, 0f))
-                                } else drag.value + delta
-                                scope.launch { drag.snapTo(target) }
+                                if (infoDrag) {
+                                    val next = (info.value - delta.y / panelH.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                    scope.launch { info.snapTo(next) }
+                                } else {
+                                    val target = drag.value + delta
+                                    scope.launch { drag.snapTo(target) }
+                                }
                             }
                         }
                         if (!started) return@awaitEachGesture
                         val v = tracker.calculateVelocity()
-                        if (up) {
-                            if (!cancelled && (drag.value.y < -h * 0.05f || v.y < -900f)) {
-                                chrome = true
-                                showInfo = true
-                            }
-                            scope.launch { drag.animateTo(Offset.Zero, spring(dampingRatio = 0.8f, stiffness = 420f)) }
+                        if (infoDrag) {
+                            if (info.value > 0.01f) chrome = true
+                            settleInfo(if (cancelled) 0f else v.y)
                         } else if (!cancelled && (abs(drag.value.y) > h * 0.1f || abs(v.y) > 1400f)) {
                             close()
                         } else {
@@ -411,13 +437,38 @@ fun ViewerOverlay(
                     }
                 },
         ) {
+            // Soft, blurred copy of the photo behind it, so the glass of the details sheet and
+            // the cut-out menu picks up the photo's colours instead of plain black.
+            val liftGlow by androidx.compose.animation.core.animateFloatAsState(
+                if (lens.lift != null) 1f else 0f, tween(260), label = "liftGlow",
+            )
+            val ambient = maxOf(info.value, liftGlow).coerceIn(0f, 1f)
+            val amb = current
+            if (ambient > 0.01f && amb != null) {
+                val ambModel = remember(amb.id) { amb.thumb() }
+                AsyncImage(
+                    model = ambModel,
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = ambient; scaleX = 1.15f; scaleY = 1.15f }
+                        .blur(56.dp),
+                )
+                Box(Modifier.fillMaxSize().graphicsLayer { alpha = ambient }.background(Color.Black.copy(alpha = 0.32f)))
+            }
             HorizontalPager(
                 state = pager,
                 userScrollEnabled = !lens.active,
                 key = { items.getOrNull(it)?.id ?: it },
                 beyondViewportPageCount = 1,
                 pageSpacing = 16.dp,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        // The photo rises with the details sheet and stays partly behind its glass.
+                        translationY = -panelH * 0.6f * info.value
+                    },
             ) { page ->
                 val m = items.getOrNull(page) ?: return@HorizontalPager
                 if (m.isVideo) {
@@ -440,9 +491,10 @@ fun ViewerOverlay(
                         contentDescription = m.name,
                         state = zs,
                         modifier = Modifier.fillMaxSize(),
-                        onClick = { chrome = !chrome },
+                        onClick = { if (showInfo) closeInfo() else chrome = !chrome },
                         onLongClick = { p ->
-                            if (!session.trash) {
+                            if (showInfo) closeInfo()
+                            else if (!session.trash) {
                                 haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
                                 lens.begin(scope, context, m, p, { contentBounds(m) }) {
                                     haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
@@ -522,7 +574,7 @@ fun ViewerOverlay(
                         Text(sub, style = MaterialTheme.typography.labelSmall, color = c.secondary)
                     }
                 }
-                GlassIconButton(haze, Icons.Outlined.Info, "Details", size = 44.dp) { showInfo = true }
+                GlassIconButton(haze, Icons.Outlined.Info, "Details", size = 44.dp) { openInfo() }
             }
         }
 
@@ -610,11 +662,16 @@ fun ViewerOverlay(
         }
 
         InfoPanel(
-            visible = showInfo && current != null && phase == Phase.Open,
+            progress = if (phase == Phase.Open && current != null) info.value else 0f,
             media = current,
             vm = vm,
             haze = haze,
-            onDismiss = { showInfo = false },
+            onHeight = { panelH = it.toFloat() },
+            onDrag = { dy ->
+                val next = (info.value - dy / panelH.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                scope.launch { info.snapTo(next) }
+            },
+            onDragEnd = { v -> settleInfo(v) },
         )
 
         val m = current
@@ -628,7 +685,7 @@ fun ViewerOverlay(
                 if (!session.trash) add(SheetOption("Move to Private safe", Icons.Outlined.Lock) { hideInSafe(listOf(m)) })
                 add(SheetOption("Use in another app…", Icons.Outlined.OpenInNew) { setAs(context, m) })
                 add(SheetOption("Open with…", Icons.Outlined.OpenInNew) { openWith(context, m) })
-                add(SheetOption("Details", Icons.Outlined.Info) { showInfo = true })
+                add(SheetOption("Details", Icons.Outlined.Info) { openInfo() })
             },
             onDismiss = { showMore = false },
         )

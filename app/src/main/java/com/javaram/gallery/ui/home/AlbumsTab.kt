@@ -3,6 +3,8 @@ package com.javaram.gallery.ui.home
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +42,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -77,7 +81,7 @@ fun AlbumsTab(
     state: LazyGridState,
     onOpenAlbum: (String) -> Unit,
     onOpenTrash: () -> Unit,
-    onAlbumMenu: (Album) -> Unit,
+    onAlbumMenu: (Album, androidx.compose.ui.geometry.Rect?) -> Unit,
     people: List<com.javaram.gallery.search.Person> = emptyList(),
     onOpenPeople: () -> Unit = {},
     onOpenPerson: (Long) -> Unit = {},
@@ -161,6 +165,7 @@ fun AlbumsTab(
             }
         }
         items(myAlbums, key = { "a-" + it.key }) { a ->
+            var bounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
             AlbumTile(
                 name = a.name,
                 count = a.count,
@@ -169,8 +174,10 @@ fun AlbumsTab(
                 fallbackColors = listOf(Color(0xFFFFA24C), Color(0xFFFF4F2E)),
                 pinned = a.pinned,
                 onClick = { onOpenAlbum(a.key) },
-                onLongClick = { onAlbumMenu(a) },
-                modifier = Modifier.animateItem(),
+                onLongClick = { onAlbumMenu(a, bounds) },
+                modifier = Modifier
+                    .animateItem()
+                    .onGloballyPositioned { bounds = it.boundsInRoot() },
             )
         }
     }

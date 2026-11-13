@@ -126,7 +126,7 @@ private sealed interface HomeSheet {
     data object Layout : HomeSheet
     data object More : HomeSheet
     data object Sort : HomeSheet
-    data class AlbumMenu(val album: Album) : HomeSheet
+    data class AlbumMenu(val album: Album, val anchor: androidx.compose.ui.geometry.Rect?) : HomeSheet
     data object Hidden : HomeSheet
 }
 
@@ -261,7 +261,7 @@ fun HomeScreen(
                         state = albumsState,
                         onOpenAlbum = onOpenAlbum,
                         onOpenTrash = onOpenTrash,
-                        onAlbumMenu = { sheet = HomeSheet.AlbumMenu(it) },
+                        onAlbumMenu = { a, r -> sheet = HomeSheet.AlbumMenu(a, r) },
                         people = people,
                         onOpenPeople = onOpenPeople,
                         onOpenPerson = onOpenPerson,
@@ -479,19 +479,44 @@ fun HomeScreen(
             onDismiss = { sheet = null },
         )
 
-        val albumMenu = s as? HomeSheet.AlbumMenu
-        GlassActionSheet(
-            visible = albumMenu != null,
+        // Album menu pops out of the album that was long-pressed (and shrinks back into it).
+        val openAlbumMenu = s as? HomeSheet.AlbumMenu
+        var lastAlbumMenu by remember { mutableStateOf<HomeSheet.AlbumMenu?>(null) }
+        if (openAlbumMenu != null) lastAlbumMenu = openAlbumMenu
+        val albumMenu = openAlbumMenu ?: lastAlbumMenu
+        val screenH = with(androidx.compose.ui.platform.LocalDensity.current) {
+            androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx()
+        }
+        val menuRoom = with(androidx.compose.ui.platform.LocalDensity.current) { 330.dp.toPx() }
+        GlassPopupMenu(
+            visible = openAlbumMenu != null,
             state = haze,
+            anchor = albumMenu?.anchor,
+            placement = if ((albumMenu?.anchor?.bottom ?: 0f) + menuRoom > screenH) PopupAnchor.AboveCenter else PopupAnchor.BelowCenter,
             title = albumMenu?.album?.name,
             options = if (albumMenu == null) emptyList() else listOf(
+                SheetOption("Open", Icons.Outlined.PhotoLibrary) { onOpenAlbum(albumMenu.album.key) },
                 SheetOption(if (albumMenu.album.pinned) "Unpin from top" else "Pin to top", Icons.Outlined.PushPin) {
                     vm.togglePin(albumMenu.album.key)
                 },
-                SheetOption("Open", Icons.Outlined.PhotoLibrary) { onOpenAlbum(albumMenu.album.key) },
-                SheetOption("Hide album", Icons.Outlined.VisibilityOff, subtitle = "Keep it out of Photos and Albums") {
+                SheetOption("Hide album", Icons.Outlined.VisibilityOff) {
                     vm.setAlbumHidden(albumMenu.album.key, true)
                     com.javaram.gallery.ui.components.toast(context, "Album hidden. Find it under ⋮ › Hidden albums")
+                },
+                SheetOption("Delete album", Icons.Outlined.DeleteOutline, destructive = true) {
+                    val a = albumMenu.album
+                    val items = all.filter { it.bucketId.toString() == a.key }
+                    if (items.isNotEmpty()) {
+                        val doIt = { request(vm.trashRequest(items)) }
+                        if (canManage) {
+                            confirm = ConfirmRequest(
+                                "Delete “${a.name}”?",
+                                if (items.size == 1) "Its 1 item will stay in Recently deleted for 30 days."
+                                else "All ${items.size} items will stay in Recently deleted for 30 days.",
+                                "Delete",
+                            ) { doIt() }
+                        } else doIt()
+                    }
                 },
             ),
             onDismiss = { if (sheet is HomeSheet.AlbumMenu) sheet = null },

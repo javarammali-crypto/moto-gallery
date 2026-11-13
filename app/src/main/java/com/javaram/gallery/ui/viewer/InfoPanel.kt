@@ -53,40 +53,59 @@ import com.javaram.gallery.util.fullDateTime
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeChild
 import java.util.Locale
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 
+/**
+ * Details sheet that rises from the bottom. [progress] runs from 0 (hidden) to 1 (open) and
+ * follows the finger while swiping, so the photo and the sheet move together.
+ */
 @Composable
 fun InfoPanel(
-    visible: Boolean,
+    progress: Float,
     media: Media?,
     vm: GalleryViewModel,
     haze: HazeState,
-    onDismiss: () -> Unit,
+    onHeight: (Int) -> Unit,
+    onDrag: (Float) -> Unit,
+    onDragEnd: (Float) -> Unit,
 ) {
     val context = LocalContext.current
     val c = GalleryTheme.colors
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    var height by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    val drop = with(density) { 40.dp.toPx() }
     Box(Modifier.fillMaxSize()) {
-        AnimatedVisibility(visible, enter = fadeIn(tween(200)), exit = fadeOut(tween(200))) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .hazeChild(haze, glassStyle(blur = 12.dp, tint = Color.Black.copy(alpha = 0.2f)))
-                    .noRippleClickable(onDismiss)
-            )
-        }
-        AnimatedVisibility(
-            visible = visible,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = slideInVertically(spring(dampingRatio = 0.85f, stiffness = 400f)) { it } + fadeIn(),
-            exit = slideOutVertically(tween(220)) { it } + fadeOut(),
-        ) {
-            val m = media ?: return@AnimatedVisibility
+        if (progress > 0.001f) {
+            val m = media ?: return@Box
             val exif by produceState<ExifDetails?>(null, m.id) { value = vm.exif(m) }
             GlassSurface(
                 haze,
                 Modifier
+                    .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(12.dp)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .onSizeChanged { height = it.height; onHeight(it.height) }
+                    .graphicsLayer {
+                        val p = progress.coerceIn(0f, 1f)
+                        translationY = (1f - p) * (height + drop)
+                        alpha = (p * 2.5f).coerceAtMost(1f)
+                    }
+                    .pointerInput(Unit) {
+                        val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
+                        androidx.compose.foundation.gestures.detectVerticalDragGestures(
+                            onDragStart = { tracker.resetTracking() },
+                            onDragEnd = { onDragEnd(tracker.calculateVelocity().y) },
+                            onDragCancel = { onDragEnd(0f) },
+                        ) { change, dy ->
+                            change.consume()
+                            tracker.addPosition(change.uptimeMillis, change.position)
+                            onDrag(dy)
+                        }
+                    },
                 shape = RoundedCornerShape(30.dp),
                 contentAlignment = Alignment.TopStart,
             ) {

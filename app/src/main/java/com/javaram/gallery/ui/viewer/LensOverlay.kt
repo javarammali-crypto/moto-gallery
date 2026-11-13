@@ -401,7 +401,7 @@ private fun LiftLayer(l: LiftLens, bounds: Rect, haze: HazeState, onExit: () -> 
         Box(
             Modifier
                 .fillMaxSize()
-                .hazeChild(haze, glassStyle(blur = 26.dp, tint = Color.Black.copy(alpha = 0.5f))) { alpha = appear.value.coerceIn(0f, 1f) }
+                .hazeChild(haze, glassStyle(blur = 26.dp, tint = Color.Black.copy(alpha = 0.4f))) { alpha = appear.value.coerceIn(0f, 1f) }
                 .noRippleClickable(onExit)
         )
         Canvas(

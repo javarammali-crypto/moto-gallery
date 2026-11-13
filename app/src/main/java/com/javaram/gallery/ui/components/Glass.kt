@@ -275,7 +275,7 @@ private fun SheetRow(opt: SheetOption, onDismiss: () -> Unit) {
     }
 }
 
-enum class PopupAnchor { BelowEnd, AboveStart, AboveEnd, AboveCenter }
+enum class PopupAnchor { BelowEnd, BelowCenter, AboveStart, AboveEnd, AboveCenter }
 
 /**
  * Small glass menu that pops out of the button that opened it ([anchor] is that
@@ -296,6 +296,7 @@ fun GlassPopupMenu(
     val margin = with(density) { 12.dp.roundToPx() }
     val origin = when (placement) {
         PopupAnchor.BelowEnd -> androidx.compose.ui.graphics.TransformOrigin(1f, 0f)
+        PopupAnchor.BelowCenter -> androidx.compose.ui.graphics.TransformOrigin(0.5f, 0f)
         PopupAnchor.AboveStart -> androidx.compose.ui.graphics.TransformOrigin(0f, 1f)
         PopupAnchor.AboveEnd -> androidx.compose.ui.graphics.TransformOrigin(1f, 1f)
         PopupAnchor.AboveCenter -> androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
@@ -310,9 +311,10 @@ fun GlassPopupMenu(
                 var x = when (placement) {
                     PopupAnchor.BelowEnd, PopupAnchor.AboveEnd -> a.right.toInt() - p.width
                     PopupAnchor.AboveStart -> a.left.toInt()
-                    PopupAnchor.AboveCenter -> (a.center.x - p.width / 2f).toInt()
+                    PopupAnchor.AboveCenter, PopupAnchor.BelowCenter -> (a.center.x - p.width / 2f).toInt()
                 }
-                var y = if (placement == PopupAnchor.BelowEnd) a.bottom.toInt() + gap else a.top.toInt() - gap - p.height
+                val below = placement == PopupAnchor.BelowEnd || placement == PopupAnchor.BelowCenter
+                var y = if (below) a.bottom.toInt() + gap else a.top.toInt() - gap - p.height
                 x = x.coerceIn(margin, (constraints.maxWidth - p.width - margin).coerceAtLeast(margin))
                 y = y.coerceIn(margin, (constraints.maxHeight - p.height - margin).coerceAtLeast(margin))
                 layout(constraints.maxWidth, constraints.maxHeight) { p.place(x, y) }
