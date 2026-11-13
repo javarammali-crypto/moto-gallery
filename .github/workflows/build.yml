@@ -45,3 +45,16 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: out/*.apk
           make_latest: true
+
+      - name: Publish test build
+        if: github.ref == 'refs/heads/dev'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test-${{ github.run_number }}
+          name: Gallery v0.2.${{ github.run_number }} (test build)
+          body: |
+            Test build for checking new features before they go out to everyone.
+            The in-app updater ignores test builds.
+          files: out/*.apk
+          prerelease: true
+          make_latest: false
