@@ -408,10 +408,14 @@ fun GlassDialog(request: ConfirmRequest?, state: HazeState, onDismiss: () -> Uni
             exit = scaleOut(tween(150), targetScale = 0.9f) + fadeOut(tween(150)),
         ) {
             if (r == null) return@AnimatedVisibility
+            // Dialogs carry text that must be readable over any photo, so their glass is much
+            // more frosted than the bars: the photo still shows through, softly.
             GlassSurface(
                 state = state,
                 modifier = Modifier.padding(horizontal = 36.dp).fillMaxWidth(),
                 shape = RoundedCornerShape(30.dp),
+                tint = if (c.dark) Color(0xC71C1C20) else Color(0xD6F6F6F8),
+                blur = 40.dp,
             ) {
                 Column(
                     Modifier.padding(top = 24.dp, start = 22.dp, end = 22.dp, bottom = 18.dp),
@@ -422,7 +426,7 @@ fun GlassDialog(request: ConfirmRequest?, state: HazeState, onDismiss: () -> Uni
                     Text(
                         r.message,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = c.secondary,
+                        color = c.content.copy(alpha = 0.72f),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
                     Spacer(Modifier.height(20.dp))

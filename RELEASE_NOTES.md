@@ -9,4 +9,5 @@ Download the APK below and open it on your phone to install, or update from insi
 - Long-press text in a photo to select and copy it (or tap the text button)
 - Long-press a person, pet or object to lift it off the background: copy, save, share or make a sticker
 - Faster, more reliable in-app updates: retries and resumes if the connection drops
+- Delete and other confirmation pop-ups are easier to read over photos
 - Editor: new Exposure slider; filter and background rows move along as you tap
