@@ -12,6 +12,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.face.FaceLandmark
 import com.javaram.gallery.data.Media
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,18 +37,27 @@ import kotlin.math.sqrt
 
 /**
  * Finds faces in photos and groups them into people, entirely on the phone.
- * Detection: ML Kit. Recognition: a FaceNet model turning each face into 128 numbers;
- * faces whose numbers are close enough belong to the same person.
+ * Detection and face landmarks: ML Kit. Recognition: an ArcFace model (InsightFace
+ * MobileFaceNet, bundled in the app) that turns each lined-up face into 512 numbers;
+ * faces whose numbers are close belong to the same person.
  */
 object FaceIndexer {
-    private const val MODEL_URL =
-        "https://raw.githubusercontent.com/javarammali-crypto/moto-gallery/main/models/facenet.tflite"
-    private const val MODEL_SHA256 = "d7c1f7f130376982c7004920ddc41925ac2e5aecf6522f476c8bbb3669db7013"
-    private const val INPUT = 160
+    private const val MODEL_ASSET = "face_arcface.tflite"
+    private const val INPUT = 112
+    private const val DIM = 512
 
-    /** Bump to regroup everyone already found when the matching rules change. */
-    private const val GROUPING_VERSION = 2
-    private const val MIN_FACE_PX = 60
+    /** Bump when the face model changes: every photo is scanned again and people regrouped. */
+    private const val MODEL_VERSION = 2
+    private const val MIN_FACE_PX = 40
+    private const val THUMB_PX = 1600
+
+    /** Where the eyes and mouth corners sit in the 112×112 face the model was trained on. */
+    private val TEMPLATE = floatArrayOf(
+        38.2946f, 51.6963f, // eye on the left of the picture
+        73.5318f, 51.5014f, // eye on the right
+        41.5493f, 92.3655f, // mouth corner, left
+        70.7299f, 92.2041f, // mouth corner, right
+    )
 
     private val mutex = Mutex()
     private val _progress = MutableStateFlow(IndexProgress())
@@ -55,48 +65,12 @@ object FaceIndexer {
     private val _generation = MutableStateFlow(0)
     val generation: StateFlow<Int> = _generation.asStateFlow()
 
-    private fun modelFile(context: Context) = File(context.filesDir, "models/facenet.tflite")
-
-    private fun sha256(f: File): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        f.inputStream().use { input ->
-            val buf = ByteArray(64 * 1024)
-            var r: Int
-            while (input.read(buf).also { r = it } >= 0) md.update(buf, 0, r)
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    /** Downloads the face model once (about 24 MB). Returns null if offline. */
-    private fun ensureModel(context: Context): File? {
-        val f = modelFile(context)
-        if (f.exists() && f.length() > 1_000_000) return f
-        f.parentFile?.mkdirs()
-        val tmp = File(f.parentFile, "facenet.part")
-        return runCatching {
-            var url = MODEL_URL
-            var conn: HttpURLConnection
-            var hops = 0
-            while (true) {
-                conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = false
-                    connectTimeout = 15_000
-                    readTimeout = 30_000
-                    setRequestProperty("User-Agent", "Gallery")
-                }
-                if (conn.responseCode in 300..399 && hops < 5) {
-                    url = conn.getHeaderField("Location"); conn.disconnect(); hops++; continue
-                }
-                break
+    private fun loadModel(context: Context): java.nio.MappedByteBuffer =
+        context.assets.openFd(MODEL_ASSET).use { fd ->
+            java.io.FileInputStream(fd.fileDescriptor).channel.use { ch ->
+                ch.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, fd.startOffset, fd.declaredLength)
             }
-            if (conn.responseCode != 200) error("HTTP ${conn.responseCode}")
-            conn.inputStream.use { input -> tmp.outputStream().use { input.copyTo(it, 64 * 1024) } }
-            conn.disconnect()
-            if (sha256(tmp) != MODEL_SHA256) { tmp.delete(); error("Model checksum mismatch") }
-            tmp.renameTo(f)
-            f
-        }.getOrNull()
-    }
+        }
 
     suspend fun run(context: Context, items: List<Media>, deadlineMillis: Long = Long.MAX_VALUE) {
         if (!mutex.tryLock()) return
@@ -104,46 +78,59 @@ object FaceIndexer {
         try {
             withContext(Dispatchers.Default) {
                 val index = SearchIndex.get(app)
+                val prefs = prefs(app)
+                lastPrefs = prefs
+                if (prefs.getInt("model", 1) < MODEL_VERSION) {
+                    // New face model: remember names by position, forget the old faces, scan everything again.
+                    index.startFaceRescan()
+                    File(app.filesDir, "models/facenet.tflite").delete()
+                    File(app.filesDir, "models/facenet.part").delete()
+                    prefs.edit().putInt("model", MODEL_VERSION).putBoolean("rescanning", true).apply()
+                    _generation.value++
+                }
                 val photos = items.filter { !it.isVideo }
                 index.deleteMissingFaces(photos.mapTo(HashSet()) { it.id })
                 val done = index.faceDoneVersions()
-                val todo = photos.filter { done[it.id] != it.dateModified }
+                // Newest photos first, so recent people show up soonest.
+                val todo = photos.filter { done[it.id] != it.dateModified }.sortedByDescending { it.dateTaken }
                 var count = photos.size - todo.size
                 _progress.value = IndexProgress(count, photos.size, todo.isNotEmpty())
-                if (prefs(app).getInt("grouping", 0) < GROUPING_VERSION) {
-                    regroup(index)
-                    prefs(app).edit().putInt("grouping", GROUPING_VERSION).apply()
-                    _generation.value++
+                if (todo.isEmpty()) {
+                    if (prefs.getBoolean("rescanning", false)) {
+                        regroupAll(index)
+                        index.clearAnchors()
+                        prefs.edit().putBoolean("rescanning", false).apply()
+                    }
+                    return@withContext
                 }
-                if (todo.isEmpty()) return@withContext
 
-                val model = withContext(Dispatchers.IO) { ensureModel(app) } ?: return@withContext
-                val interpreter = Interpreter(model, Interpreter.Options().setNumThreads(4))
+                val interpreter = Interpreter(loadModel(app), Interpreter.Options().setNumThreads(4))
                 val detector = FaceDetection.getClient(
                     FaceDetectorOptions.Builder()
                         .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-                        .setMinFaceSize(0.06f)
+                        .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+                        .setMinFaceSize(0.04f)
                         .build()
                 )
-                val ex = index.exemplars()
-                val groups = index.loadPersonCentroids().map {
-                    FaceMatch.Group(it.id, it.centroid, it.count, ex[it.id]?.toMutableList() ?: ArrayList(), it.name)
-                }.toMutableList()
-                val coverAreas = index.loadPersonCentroids().associate { it.id to it.coverArea }.toMutableMap()
+                val rescanning = prefs.getBoolean("rescanning", false)
+                val groups = loadGroups(index)
                 val input = ByteBuffer.allocateDirect(INPUT * INPUT * 3 * 4).order(ByteOrder.nativeOrder())
-                val output = Array(1) { FloatArray(128) }
+                val output = Array(1) { FloatArray(DIM) }
+                var newFaces = 0
+                var sinceRegroup = 0
+                var finished = true
                 try {
                     for (m in todo) {
-                        if (System.currentTimeMillis() > deadlineMillis) break
+                        if (System.currentTimeMillis() > deadlineMillis) { finished = false; break }
                         val bitmap = withContext(Dispatchers.IO) {
-                            runCatching { app.contentResolver.loadThumbnail(m.uri, Size(1024, 1024), null) }.getOrNull()
+                            runCatching { app.contentResolver.loadThumbnail(m.uri, Size(THUMB_PX, THUMB_PX), null) }.getOrNull()
                         }
                         val stored = ArrayList<StoredFace>()
                         if (bitmap != null) {
                             val faces = try {
                                 detector.process(InputImage.fromBitmap(bitmap, 0)).await()
                             } catch (e: MlKitException) {
-                                if (e.errorCode == MlKitException.UNAVAILABLE) { bitmap.recycle(); break }
+                                if (e.errorCode == MlKitException.UNAVAILABLE) { bitmap.recycle(); finished = false; break }
                                 emptyList()
                             } catch (e: Exception) {
                                 emptyList()
@@ -151,52 +138,63 @@ object FaceIndexer {
                             for (face in faces) {
                                 val box = face.boundingBox
                                 if (box.width() < MIN_FACE_PX || box.height() < MIN_FACE_PX) continue
-                                if (abs(face.headEulerAngleY) > 40f) continue
-                                val crop = cropFace(bitmap, face) ?: continue
+                                if (abs(face.headEulerAngleY) > 50f || abs(face.headEulerAngleX) > 40f) continue
+                                val aligned = alignFace(bitmap, face) ?: continue
                                 // Average the face with its mirror image: steadier fingerprints.
-                                val e1 = embed(interpreter, crop, input, output)
-                                val flipped = mirror(crop)
+                                val e1 = embed(interpreter, aligned, input, output)
+                                val flipped = mirror(aligned)
                                 val e2 = embed(interpreter, flipped, input, output)
                                 flipped.recycle()
-                                crop.recycle()
-                                val emb = Embeddings.normalize(FloatArray(e1.size) { e1[it] + e2[it] })
+                                val q = quality(face, aligned)
+                                aligned.recycle()
+                                val emb = Embeddings.normalize(FloatArray(DIM) { e1[it] + e2[it] })
                                 val w = bitmap.width.toFloat()
                                 val h = bitmap.height.toFloat()
-                                val area = (box.width() * box.height()) / (w * h)
-                                // Assign to the best-fitting person, or start a new one.
-                                val person = FaceMatch.best(emb, groups) ?: run {
-                                    val id = index.createPerson(emb)
-                                    FaceMatch.Group(id, emb, 0, ArrayList(), null).also { groups += it }
-                                }
-                                FaceMatch.add(person, emb)
+                                // Join an existing person only on a clear match; otherwise wait for the next regroup.
+                                val g = FaceMatch.best(emb, groups)
+                                val person = if (g != null && q >= 0.3f && stored.none { it.person == g.id }) {
+                                    FaceMatch.add(g, emb); g.id
+                                } else -1L
                                 stored += StoredFace(
                                     left = (box.left / w).coerceIn(0f, 1f),
                                     top = (box.top / h).coerceIn(0f, 1f),
                                     right = (box.right / w).coerceIn(0f, 1f),
                                     bottom = (box.bottom / h).coerceIn(0f, 1f),
-                                    area = area,
+                                    area = (box.width() * box.height()) / (w * h),
                                     embedding = emb,
-                                    person = person.id,
+                                    person = person,
+                                    quality = q,
                                 )
                             }
                             bitmap.recycle()
                         }
-                        val ids = index.putFaces(m.id, m.dateModified, stored)
-                        // Keep each person's cover as their clearest (largest) face.
-                        stored.forEachIndexed { i, f ->
-                            val g = groups.first { it.id == f.person }
-                            val prev = coverAreas[g.id] ?: 0f
-                            val cover = if (f.area > prev) { coverAreas[g.id] = f.area; ids.getOrNull(i) } else null
-                            index.savePerson(PersonCentroid(g.id, g.centroid, g.count, coverAreas[g.id] ?: 0f, g.name), cover)
-                        }
+                        index.putFaces(m.id, m.dateModified, stored)
+                        newFaces += stored.size
+                        sinceRegroup++
                         count++
                         _progress.value = IndexProgress(count, photos.size, true)
+                        // While rescanning, regroup now and then so people appear as the scan goes.
+                        if (rescanning && sinceRegroup >= 400) {
+                            regroupAll(index)
+                            groups.clear(); groups += loadGroups(index)
+                            sinceRegroup = 0
+                        }
                         if (count % 50 == 0) _generation.value++
                     }
-                    mergeSimilar(index)
                 } finally {
                     interpreter.close()
                     detector.close()
+                }
+                when {
+                    rescanning -> {
+                        regroupAll(index)
+                        if (finished) {
+                            index.clearAnchors()
+                            prefs.edit().putBoolean("rescanning", false).apply()
+                        }
+                    }
+                    // Enough new faces that weren't recognised: regroup everyone so new people form.
+                    newFaces >= 150 || index.unassignedFaceCount() - prefs.getInt("unassigned", 0) >= 60 -> regroupAll(index)
                 }
                 _generation.value++
             }
@@ -206,6 +204,17 @@ object FaceIndexer {
         }
     }
 
+    /** Groups every face again from scratch, keeping the names and hidden choices. */
+    private var lastPrefs: android.content.SharedPreferences? = null
+
+    private suspend fun regroupAll(index: SearchIndex) {
+        val result = FaceCluster.cluster(index.facesForCluster(), index.anchors())
+        index.rewritePeople(result.people)
+        // Remember how many faces nobody claimed, so only new ones trigger the next full regroup.
+        lastPrefs?.edit()?.putInt("unassigned", index.unassignedFaceCount())?.apply()
+        _generation.value++
+    }
+
     private fun prefs(context: Context) = context.getSharedPreferences("faces", Context.MODE_PRIVATE)
 
     private fun loadGroups(index: SearchIndex): MutableList<FaceMatch.Group> {
@@ -213,89 +222,6 @@ object FaceIndexer {
         return index.loadPersonCentroids().map {
             FaceMatch.Group(it.id, it.centroid, it.count, ex[it.id]?.toMutableList() ?: ArrayList(), it.name)
         }.toMutableList()
-    }
-
-    /** Joins people that turn out to be the same person (split early on). */
-    private fun mergeSimilar(index: SearchIndex) {
-        val notSame = index.notSamePairs()
-        var rounds = 0
-        while (rounds++ < 200) {
-            val groups = loadGroups(index).sortedByDescending { it.count }
-            var pair: Pair<FaceMatch.Group, FaceMatch.Group>? = null
-            outer@ for (i in groups.indices) for (j in i + 1 until groups.size) {
-                val a = groups[i]
-                val b = groups[j]
-                if ((minOf(a.id, b.id) to maxOf(a.id, b.id)) in notSame) continue
-                if (FaceMatch.shouldMerge(a, b)) { pair = a to b; break@outer }
-            }
-            val (a, b) = pair ?: break
-            index.mergePersons(from = b.id, into = a.id)
-        }
-    }
-
-    /**
-     * Regroups every face already found using the current rules, keeping the names and
-     * hidden choices the user already made.
-     */
-    private fun regroup(index: SearchIndex) {
-        val faces = index.facesForRegroup()
-        if (faces.isEmpty()) return
-        val old = index.oldPersons().associateBy { it.id }
-        val groups = ArrayList<FaceMatch.Group>()
-        val members = ArrayList<MutableList<SearchIndex.FaceRow>>()
-        for (f in faces) {
-            val g = FaceMatch.best(f.emb, groups)
-            if (g == null) {
-                groups += FaceMatch.Group(groups.size.toLong(), f.emb, 1, mutableListOf(f.emb), null)
-                members += mutableListOf(f)
-            } else {
-                FaceMatch.add(g, f.emb)
-                members[g.id.toInt()] += f
-            }
-        }
-        // Carry names over: each new group takes the most common named old person among its faces.
-        groups.forEachIndexed { i, g ->
-            val tally = members[i].mapNotNull { old[it.person] }.groupingBy { it }.eachCount()
-            g.name = tally.entries.filter { it.key.name != null }.maxByOrNull { it.value }?.key?.name
-        }
-        // Merge groups that are clearly the same person, or that share a name.
-        val alive = BooleanArray(groups.size) { true }
-        var changed = true
-        while (changed) {
-            changed = false
-            loop@ for (i in groups.indices) {
-                if (!alive[i]) continue
-                for (j in i + 1 until groups.size) {
-                    if (!alive[j]) continue
-                    val a = groups[i]
-                    val b = groups[j]
-                    val sameName = a.name != null && a.name.equals(b.name, true)
-                    if (sameName || FaceMatch.shouldMerge(a, b)) {
-                        FaceMatch.absorb(a, b)
-                        members[i].addAll(members[j])
-                        alive[j] = false
-                        changed = true
-                        continue@loop
-                    }
-                }
-            }
-        }
-        val result = groups.indices.filter { alive[it] }.map { i ->
-            val g = groups[i]
-            val m = members[i]
-            val cover = m.maxBy { it.area }
-            val hiddenVotes = m.mapNotNull { old[it.person] }.count { it.hidden }
-            SearchIndex.NewPerson(
-                name = g.name,
-                hidden = hiddenVotes * 2 > m.size,
-                centroid = g.centroid,
-                count = m.size,
-                coverFace = cover.id,
-                coverArea = cover.area,
-                faceIds = m.map { it.id },
-            )
-        }
-        index.rewritePeople(result)
     }
 
     /** Pairs of people who might be the same, for the "Same person?" cards. */
@@ -321,43 +247,96 @@ object FaceIndexer {
         return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
     }
 
-    /** Square crop around the face with some margin, rotated so the eyes are level. */
-    private fun cropFace(src: Bitmap, face: Face): Bitmap? {
-        val box = face.boundingBox
-        val size = max(box.width(), box.height()) * 1.1f
-        val cx = box.exactCenterX()
-        val cy = box.exactCenterY()
-        if (size < 20f) return null
-        val out = Bitmap.createBitmap(INPUT, INPUT, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(out)
-        val scale = INPUT / size
-        val m = Matrix().apply {
-            postTranslate(-cx, -cy)
-            postRotate(-face.headEulerAngleZ)
-            postScale(scale, scale)
-            postTranslate(INPUT / 2f, INPUT / 2f)
+    /**
+     * Lines the face up the way the model expects: eyes and mouth corners moved onto fixed
+     * spots in a 112×112 picture (a best-fit turn, zoom and shift). Falls back to the eyes
+     * alone when the mouth isn't found.
+     */
+    private fun alignFace(src: Bitmap, face: Face): Bitmap? {
+        fun pt(type: Int) = face.getLandmark(type)?.position
+        val e1 = pt(FaceLandmark.LEFT_EYE)
+        val e2 = pt(FaceLandmark.RIGHT_EYE)
+        if (e1 == null || e2 == null) return null
+        val (eyeL, eyeR) = if (e1.x <= e2.x) e1 to e2 else e2 to e1
+        val m1 = pt(FaceLandmark.MOUTH_LEFT)
+        val m2 = pt(FaceLandmark.MOUTH_RIGHT)
+        val srcPts = ArrayList<Float>()
+        val dstPts = ArrayList<Float>()
+        srcPts += listOf(eyeL.x, eyeL.y, eyeR.x, eyeR.y)
+        dstPts += TEMPLATE.slice(0..3)
+        if (m1 != null && m2 != null) {
+            val (mL, mR) = if (m1.x <= m2.x) m1 to m2 else m2 to m1
+            srcPts += listOf(mL.x, mL.y, mR.x, mR.y)
+            dstPts += TEMPLATE.slice(4..7)
         }
-        canvas.drawBitmap(src, m, Paint(Paint.FILTER_BITMAP_FLAG))
+        val m = similarity(srcPts.toFloatArray(), dstPts.toFloatArray()) ?: return null
+        val out = Bitmap.createBitmap(INPUT, INPUT, Bitmap.Config.ARGB_8888)
+        Canvas(out).drawBitmap(src, m, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
         return out
     }
 
-    /** Runs FaceNet: per-image standardisation in, L2-normalised 128-d fingerprint out. */
+    /** Least-squares turn + zoom + shift mapping [src] points onto [dst] points (x, y pairs). */
+    private fun similarity(src: FloatArray, dst: FloatArray): Matrix? {
+        val n = src.size / 2
+        var sx = 0f; var sy = 0f; var dx = 0f; var dy = 0f
+        for (i in 0 until n) { sx += src[2 * i]; sy += src[2 * i + 1]; dx += dst[2 * i]; dy += dst[2 * i + 1] }
+        sx /= n; sy /= n; dx /= n; dy /= n
+        var a = 0f; var b = 0f; var norm = 0f
+        for (i in 0 until n) {
+            val px = src[2 * i] - sx; val py = src[2 * i + 1] - sy
+            val qx = dst[2 * i] - dx; val qy = dst[2 * i + 1] - dy
+            a += px * qx + py * qy
+            b += px * qy - py * qx
+            norm += px * px + py * py
+        }
+        if (norm < 1e-3f) return null
+        val c = a / norm
+        val s = b / norm
+        val tx = dx - (c * sx - s * sy)
+        val ty = dy - (s * sx + c * sy)
+        return Matrix().apply { setValues(floatArrayOf(c, -s, tx, s, c, ty, 0f, 0f, 1f)) }
+    }
+
+    /**
+     * 0..1 score for how useful a face is for recognition: big enough, facing the camera,
+     * and sharp. Poor faces still count, but can't start a new person on their own.
+     */
+    private fun quality(face: Face, aligned: Bitmap): Float {
+        val side = min(face.boundingBox.width(), face.boundingBox.height()).toFloat()
+        val size = ((side - 40f) / 80f).coerceIn(0f, 1f)
+        val yaw = (1f - (abs(face.headEulerAngleY) - 15f).coerceAtLeast(0f) / 30f).coerceIn(0f, 1f)
+        val pitch = (1f - (abs(face.headEulerAngleX) - 12f).coerceAtLeast(0f) / 25f).coerceIn(0f, 1f)
+        val sharp = (sharpness(aligned) / 120f).coerceIn(0f, 1f)
+        return (0.35f * size + 0.3f * yaw + 0.15f * pitch + 0.2f * sharp).coerceIn(0f, 1f)
+    }
+
+    /** Variance of the Laplacian over the face: low for blurry faces. */
+    private fun sharpness(b: Bitmap): Float {
+        val w = b.width; val h = b.height
+        val px = IntArray(w * h)
+        b.getPixels(px, 0, w, 0, 0, w, h)
+        val g = FloatArray(w * h) { i -> val p = px[i]; (((p shr 16) and 0xFF) * 0.299f + ((p shr 8) and 0xFF) * 0.587f + (p and 0xFF) * 0.114f) }
+        var sum = 0.0; var sq = 0.0; var cnt = 0
+        for (y in 20 until h - 20) for (x in 20 until w - 20) {
+            val i = y * w + x
+            val l = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - w] - g[i + w]
+            sum += l; sq += l * l; cnt++
+        }
+        if (cnt == 0) return 0f
+        val mean = sum / cnt
+        return (sq / cnt - mean * mean).toFloat()
+    }
+
+    /** Runs the face model: pixels scaled to -1..1 in, L2-normalised 512-d fingerprint out. */
     private fun embed(interpreter: Interpreter, face: Bitmap, input: ByteBuffer, output: Array<FloatArray>): FloatArray {
         val px = IntArray(INPUT * INPUT)
         face.getPixels(px, 0, INPUT, 0, 0, INPUT, INPUT)
-        val vals = FloatArray(px.size * 3)
-        var k = 0
-        for (p in px) {
-            vals[k++] = ((p shr 16) and 0xFF).toFloat()
-            vals[k++] = ((p shr 8) and 0xFF).toFloat()
-            vals[k++] = (p and 0xFF).toFloat()
-        }
-        val mean = vals.average().toFloat()
-        var varSum = 0f
-        for (v in vals) varSum += (v - mean) * (v - mean)
-        val std = max(sqrt(varSum / vals.size), 1f / sqrt(vals.size.toFloat()))
         input.rewind()
-        for (v in vals) input.putFloat((v - mean) / std)
+        for (p in px) {
+            input.putFloat((((p shr 16) and 0xFF) - 127.5f) / 127.5f)
+            input.putFloat((((p shr 8) and 0xFF) - 127.5f) / 127.5f)
+            input.putFloat(((p and 0xFF) - 127.5f) / 127.5f)
+        }
         input.rewind()
         interpreter.run(input, output)
         return Embeddings.normalize(output[0].copyOf())

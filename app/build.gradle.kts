@@ -61,6 +61,10 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+    // The face model is memory-mapped straight out of the APK, so it must stay uncompressed.
+    androidResources {
+        noCompress += "tflite"
+    }
 }
 
 dependencies {
