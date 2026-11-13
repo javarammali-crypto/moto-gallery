@@ -24,7 +24,7 @@ data class IndexEntry(
 
 /** Small SQLite store holding what the indexer learned about each photo. Everything stays on the phone. */
 class SearchIndex private constructor(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "search.db", null, 4) {
+    SQLiteOpenHelper(context.applicationContext, "search.db", null, 5) {
 
     companion object {
         @Volatile private var instance: SearchIndex? = null
@@ -59,7 +59,8 @@ class SearchIndex private constructor(context: Context) :
                 l REAL, t REAL, r REAL, b REAL,
                 area REAL,
                 emb BLOB,
-                person INTEGER NOT NULL DEFAULT -1
+                person INTEGER NOT NULL DEFAULT -1,
+                q REAL NOT NULL DEFAULT 1
             )"""
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS faces_media ON faces(media_id)")
@@ -78,6 +79,15 @@ class SearchIndex private constructor(context: Context) :
         db.execSQL("CREATE TABLE IF NOT EXISTS face_done(media_id INTEGER PRIMARY KEY, modified INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE IF NOT EXISTS nomerge(a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY(a, b))")
         db.execSQL("CREATE TABLE IF NOT EXISTS quality(id INTEGER PRIMARY KEY, modified INTEGER NOT NULL, dhash INTEGER, sharp REAL)")
+        // Names (and hidden choices) remembered by where the face was, so they survive a full rescan.
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS anchors(
+                media_id INTEGER NOT NULL,
+                l REAL, t REAL, r REAL, b REAL,
+                name TEXT,
+                hidden INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
     }
 
     // ---------------- Photo quality (for Cleanup) ----------------
@@ -118,7 +128,86 @@ class SearchIndex private constructor(context: Context) :
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         createFaceTables(db)
+        if (oldVersion < 5) {
+            runCatching { db.execSQL("ALTER TABLE faces ADD COLUMN q REAL NOT NULL DEFAULT 1") }
+        }
     }
+
+    // ---------------- Full rescan with a new face model ----------------
+
+    /** Remembers who the user named (or hid) by face position, then forgets all faces and people. */
+    fun startFaceRescan() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL(
+                """INSERT INTO anchors(media_id, l, t, r, b, name, hidden)
+                   SELECT f.media_id, f.l, f.t, f.r, f.b, p.name, p.hidden
+                   FROM faces f JOIN persons p ON p.id = f.person
+                   WHERE p.name IS NOT NULL OR p.hidden = 1"""
+            )
+            db.execSQL("DELETE FROM faces")
+            db.execSQL("DELETE FROM face_done")
+            db.execSQL("DELETE FROM persons")
+            db.execSQL("DELETE FROM nomerge")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    data class Anchor(val mediaId: Long, val box: FloatArray, val name: String?, val hidden: Boolean)
+
+    /** Saved names plus the faces currently in named or hidden people. */
+    fun anchors(): List<Anchor> {
+        val out = ArrayList<Anchor>()
+        readableDatabase.rawQuery("SELECT media_id, l, t, r, b, name, hidden FROM anchors", null).use { c ->
+            while (c.moveToNext()) out += Anchor(
+                c.getLong(0), floatArrayOf(c.getFloat(1), c.getFloat(2), c.getFloat(3), c.getFloat(4)),
+                c.getString(5), c.getInt(6) == 1,
+            )
+        }
+        readableDatabase.rawQuery(
+            """SELECT f.media_id, f.l, f.t, f.r, f.b, p.name, p.hidden FROM faces f JOIN persons p ON p.id = f.person
+               WHERE p.name IS NOT NULL OR p.hidden = 1""",
+            null,
+        ).use { c ->
+            while (c.moveToNext()) out += Anchor(
+                c.getLong(0), floatArrayOf(c.getFloat(1), c.getFloat(2), c.getFloat(3), c.getFloat(4)),
+                c.getString(5), c.getInt(6) == 1,
+            )
+        }
+        return out
+    }
+
+    fun clearAnchors() {
+        writableDatabase.execSQL("DELETE FROM anchors")
+    }
+
+    data class ClusterFace(
+        val id: Long, val mediaId: Long, val box: FloatArray, val area: Float, val q: Float, val emb: FloatArray,
+    )
+
+    /** Every face that may be grouped (not ones the user took out of a person). */
+    fun facesForCluster(): List<ClusterFace> {
+        val out = ArrayList<ClusterFace>()
+        readableDatabase.rawQuery(
+            "SELECT id, media_id, l, t, r, b, area, q, emb FROM faces WHERE person != -2", null,
+        ).use { c ->
+            while (c.moveToNext()) out += ClusterFace(
+                c.getLong(0), c.getLong(1),
+                floatArrayOf(c.getFloat(2), c.getFloat(3), c.getFloat(4), c.getFloat(5)),
+                c.getFloat(6), c.getFloat(7), Embeddings.fromBytes(c.getBlob(8)),
+            )
+        }
+        return out
+    }
+
+    /** Faces found but not (yet) part of anyone. */
+    fun unassignedFaceCount(): Int =
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM faces WHERE person = -1", null).use { c ->
+            if (c.moveToFirst()) c.getInt(0) else 0
+        }
 
     // ---------------- Faces & people ----------------
 
@@ -161,6 +250,7 @@ class SearchIndex private constructor(context: Context) :
                     put("area", f.area)
                     put("emb", Embeddings.toBytes(f.embedding))
                     put("person", f.person)
+                    put("q", f.quality)
                 }
                 ids += db.insert("faces", null, v)
             }
@@ -543,6 +633,8 @@ data class StoredFace(
     val area: Float,
     val embedding: FloatArray,
     val person: Long,
+    /** 0..1: how usable the face is for recognising someone (size, angle, sharpness). */
+    val quality: Float = 1f,
 )
 
 data class PersonCentroid(

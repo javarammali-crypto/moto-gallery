@@ -5,18 +5,24 @@ import kotlin.math.max
 /**
  * Decides which faces belong together.
  *
- * Calibrated on this FaceNet model: clean photos of the same person score ≥ 0.8, different
- * people stay ≤ ~0.35. Everyday photos (angles, lighting, kids growing up) pull same-person
- * scores down, so a face joins a person if it is close to their average face OR close to any
- * one of their clearest faces.
+ * Calibrated on the ArcFace (InsightFace MobileFaceNet) model on labelled photo pairs:
+ * the same person scores 0.42 to 0.9 (typically ~0.73), different people stay below ~0.24.
  */
 object FaceMatch {
-    const val CENTROID = 0.50f
-    const val EXEMPLAR = 0.60f
-    const val MERGE_CENTROID = 0.56f
-    const val MERGE_LINK = 0.62f
-    const val SUGGEST = 0.42f
-    const val MAX_EXEMPLARS = 24
+    /** Two clear faces this similar are linked when grouping the whole library. */
+    const val LINK = 0.40f
+    /** A clear new face joins a person at this similarity. */
+    const val ASSIGN_CLEAR = 0.42f
+    /** A blurry, small or turned face needs a stronger match. */
+    const val ASSIGN_WEAK = 0.48f
+    /** Added to centroid similarity: an average face scores lower than a single good match. */
+    const val CENTROID_BONUS = 0.06f
+    const val CENTROID = 0.36f
+    const val EXEMPLAR = 0.42f
+    const val MERGE_CENTROID = 0.50f
+    const val MERGE_LINK = 0.55f
+    const val SUGGEST = 0.30f
+    const val MAX_EXEMPLARS = 40
 
     class Group(
         val id: Long,
