@@ -74,9 +74,10 @@ object Updater {
      */
     private val http: okhttp3.OkHttpClient by lazy {
         okhttp3.OkHttpClient.Builder()
-            .dns { host ->
-                okhttp3.Dns.SYSTEM.lookup(host).sortedBy { if (it is java.net.Inet4Address) 0 else 1 }
-            }
+            .dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String): List<java.net.InetAddress> =
+                    okhttp3.Dns.SYSTEM.lookup(hostname).sortedBy { if (it is java.net.Inet4Address) 0 else 1 }
+            })
             .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
