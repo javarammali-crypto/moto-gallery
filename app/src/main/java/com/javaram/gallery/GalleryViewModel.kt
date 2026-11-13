@@ -214,7 +214,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
-            _update.value = UpdateState.Downloading(info, 0f)
+            _update.value = UpdateState.Downloading(info, -1f)
             runCatching {
                 val file = Updater.download(app, info) { p -> _update.value = UpdateState.Downloading(info, p) }
                 _update.value = UpdateState.Installing(info)

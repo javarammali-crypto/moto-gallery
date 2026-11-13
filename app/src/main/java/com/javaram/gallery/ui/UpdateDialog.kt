@@ -86,7 +86,7 @@ fun UpdateDialog(
     val visible = info != null
     val busy = state is UpdateState.Downloading || state is UpdateState.Installing
     val progress by animateFloatAsState(
-        (state as? UpdateState.Downloading)?.progress ?: if (state is UpdateState.Installing) 1f else 0f,
+        ((state as? UpdateState.Downloading)?.progress ?: if (state is UpdateState.Installing) 1f else 0f).coerceAtLeast(0f),
         tween(200), label = "progress",
     )
 
@@ -135,7 +135,9 @@ fun UpdateDialog(
                         when (state) {
                             is UpdateState.NeedsPermission ->
                                 "Allow Gallery to install updates in the screen that opened, then come back."
-                            is UpdateState.Downloading -> "Downloading… ${(progress * 100).toInt()}%"
+                            is UpdateState.Downloading ->
+                                if (state.progress < 0f) "Connecting to GitHub…"
+                                else "Downloading… ${(progress * 100).toInt()}%"
                             is UpdateState.Installing -> "Installing — Gallery will restart."
                             else -> "A new version of Gallery is ready. It installs right here, no GitHub needed."
                         },

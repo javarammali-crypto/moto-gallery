@@ -66,49 +66,93 @@ object Updater {
         }
     }
 
+    /**
+     * HTTP client for update downloads. GitHub hands the APK out from a separate download
+     * server; on some mobile networks the IPv6 route to it hangs, which looked like the
+     * download "never starting". IPv4 addresses are tried first and every route gets a short
+     * connect timeout, so a bad route is skipped quickly instead of stalling.
+     */
+    private val http: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .dns { host ->
+                okhttp3.Dns.SYSTEM.lookup(host).sortedBy { if (it is java.net.Inet4Address) 0 else 1 }
+            }
+            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
+    /**
+     * Downloads the APK. [onProgress] gets -1 while connecting, then 0..1. A dropped or
+     * stalled connection is retried up to 4 times, carrying on from where it stopped.
+     */
     suspend fun download(context: Context, info: UpdateInfo, onProgress: (Float) -> Unit): File =
         withContext(Dispatchers.IO) {
             val dir = File(context.cacheDir, "updates").apply { mkdirs() }
-            dir.listFiles()?.forEach { it.delete() }
             val out = File(dir, "update-${info.versionCode}.apk")
-            var url = info.apkUrl
-            var conn: HttpURLConnection
-            var redirects = 0
-            while (true) {
-                conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = false
-                    setRequestProperty("User-Agent", "Gallery-Updater")
-                    connectTimeout = 15_000
-                    readTimeout = 30_000
-                }
-                val code = conn.responseCode
-                if (code in 300..399 && redirects < 5) {
-                    url = conn.getHeaderField("Location") ?: break
-                    conn.disconnect()
-                    redirects++
-                    continue
-                }
-                break
+            dir.listFiles()?.filter { it != out }?.forEach { it.delete() }
+            // A finished file from an earlier try can be reused.
+            if (info.sizeBytes > 0 && out.length() == info.sizeBytes) {
+                onProgress(1f)
+                return@withContext out
             }
-            try {
-                if (conn.responseCode != 200) error("Download failed (${conn.responseCode})")
-                val total = conn.contentLengthLong.takeIf { it > 0 } ?: info.sizeBytes
-                conn.inputStream.use { input ->
-                    out.outputStream().use { output ->
-                        val buf = ByteArray(64 * 1024)
-                        var read: Int
-                        var done = 0L
-                        while (input.read(buf).also { read = it } >= 0) {
-                            output.write(buf, 0, read)
-                            done += read
-                            if (total > 0) onProgress((done.toFloat() / total).coerceIn(0f, 1f))
+            if (info.sizeBytes > 0 && out.length() > info.sizeBytes) out.delete()
+
+            var lastError: Exception? = null
+            for (attempt in 0 until 4) {
+                if (attempt > 0) kotlinx.coroutines.delay(1_500L * attempt)
+                onProgress(if (out.length() > 0 && info.sizeBytes > 0) out.length().toFloat() / info.sizeBytes else -1f)
+                try {
+                    val have = out.length()
+                    val request = okhttp3.Request.Builder()
+                        .url(info.apkUrl)
+                        .header("User-Agent", "Gallery-Updater")
+                        .apply { if (have > 0) header("Range", "bytes=$have-") }
+                        .build()
+                    http.newCall(request).execute().use { resp ->
+                        val resumed = resp.code == 206
+                        if (!resp.isSuccessful) error("Download failed (${resp.code})")
+                        val body = resp.body ?: error("Download failed")
+                        val start = if (resumed) have else 0L
+                        val total = if (resumed) start + body.contentLength() else body.contentLength().takeIf { it > 0 } ?: info.sizeBytes
+                        java.io.FileOutputStream(out, resumed).use { output ->
+                            body.byteStream().use { input ->
+                                val buf = ByteArray(64 * 1024)
+                                var done = start
+                                var lastReport = 0L
+                                while (true) {
+                                    val read = input.read(buf)
+                                    if (read < 0) break
+                                    output.write(buf, 0, read)
+                                    done += read
+                                    val now = System.currentTimeMillis()
+                                    if (total > 0 && now - lastReport > 120) {
+                                        lastReport = now
+                                        onProgress((done.toFloat() / total).coerceIn(0f, 1f))
+                                    }
+                                }
+                            }
                         }
                     }
+                    if (info.sizeBytes > 0 && out.length() != info.sizeBytes) error("Download incomplete")
+                    onProgress(1f)
+                    return@withContext out
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    if (e.message == "Download incomplete" && out.length() > info.sizeBytes) out.delete()
                 }
-            } finally {
-                conn.disconnect()
             }
-            out
+            val e = lastError
+            throw IllegalStateException(
+                if (e is java.net.SocketTimeoutException || e is java.net.UnknownHostException || e is java.io.InterruptedIOException)
+                    "Couldn't reach GitHub. Check your connection and try again."
+                else e?.message ?: "Update failed"
+            )
         }
 
     fun canInstall(context: Context): Boolean = context.packageManager.canRequestPackageInstalls()

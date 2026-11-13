@@ -82,6 +82,7 @@ dependencies {
 
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-video:2.7.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("me.saket.telephoto:zoomable-image-coil:0.14.0")
     implementation("me.saket.telephoto:flick:0.14.0")
     implementation("dev.chrisbanes.haze:haze:1.1.1")
