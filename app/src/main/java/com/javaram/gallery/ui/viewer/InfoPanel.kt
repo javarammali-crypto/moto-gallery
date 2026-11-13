@@ -53,6 +53,7 @@ import com.javaram.gallery.util.fullDateTime
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeChild
 import java.util.Locale
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.graphicsLayer
@@ -96,7 +97,7 @@ fun InfoPanel(
                     }
                     .pointerInput(Unit) {
                         val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
-                        androidx.compose.foundation.gestures.detectVerticalDragGestures(
+                        detectVerticalDragGestures(
                             onDragStart = { tracker.resetTracking() },
                             onDragEnd = { onDragEnd(tracker.calculateVelocity().y) },
                             onDragCancel = { onDragEnd(0f) },
