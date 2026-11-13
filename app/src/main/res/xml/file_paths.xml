@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Cut-outs and stickers handed to the clipboard or the share sheet -->
+    <cache-path name="lens" path="lens/" />
+</paths>

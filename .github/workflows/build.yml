@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   workflow_dispatch:
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
       - name: Rename APK
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/release/app-release.apk out/Gallery-v0.1.${{ github.run_number }}.apk
+          cp app/build/outputs/apk/release/app-release.apk out/Gallery-v0.2.${{ github.run_number }}.apk
 
       - uses: actions/upload-artifact@v4
         with:
@@ -37,12 +37,11 @@ jobs:
           path: out/*.apk
 
       - name: Publish release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Gallery v0.1.${{ github.run_number }}
-          body: |
-            Automatic build from commit ${{ github.sha }}.
-            Download the APK below and open it on your phone to install or update.
+          name: Gallery v0.2.${{ github.run_number }}
+          body_path: RELEASE_NOTES.md
           files: out/*.apk
           make_latest: true

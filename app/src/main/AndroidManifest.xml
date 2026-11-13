@@ -61,6 +61,16 @@
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="ica,ocr,face,subject_segment" />
 
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <receiver
             android:name=".update.UpdateReceiver"
             android:exported="false" />

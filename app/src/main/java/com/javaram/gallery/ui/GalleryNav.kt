@@ -107,6 +107,12 @@ fun GalleryNav(vm: GalleryViewModel) {
                     onBack = { nav.popBackStack() },
                 )
             }
+            composable("albumpick/{name}") { entry ->
+                com.javaram.gallery.ui.album.AlbumPickScreen(
+                    vm, name = entry.arguments?.getString("name") ?: "New album",
+                    onBack = { nav.popBackStack() },
+                )
+            }
             composable("collage") { com.javaram.gallery.ui.create.CollageScreen(vm, onBack = { nav.popBackStack() }) }
             composable("editpick") { com.javaram.gallery.ui.create.EditPickScreen(vm, onBack = { nav.popBackStack() }) }
             composable("safe") { com.javaram.gallery.ui.safe.SafeScreen(vm, onBack = { nav.popBackStack() }) }

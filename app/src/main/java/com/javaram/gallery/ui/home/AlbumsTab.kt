@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoDelete
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -81,6 +82,7 @@ fun AlbumsTab(
     onOpenPeople: () -> Unit = {},
     onOpenPerson: (Long) -> Unit = {},
     onOpenSafe: () -> Unit = {},
+    onNewAlbum: () -> Unit = {},
 ) {
     val c = GalleryTheme.colors
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 110.dp
@@ -131,12 +133,32 @@ fun AlbumsTab(
             )
         }
         item(span = { GridItemSpan(maxLineSpan) }, key = "mine") {
-            Text(
-                "My albums",
-                style = MaterialTheme.typography.headlineSmall,
-                color = c.content,
-                modifier = Modifier.padding(top = 10.dp, start = 4.dp),
-            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 10.dp, start = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "My albums",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = c.content,
+                    modifier = Modifier.weight(1f),
+                )
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(50))
+                        .combinedClickable(onClick = onNewAlbum)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Add, null, tint = com.javaram.gallery.ui.theme.Accent, modifier = Modifier.size(18.dp))
+                    Text(
+                        "New album",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = com.javaram.gallery.ui.theme.Accent,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+            }
         }
         items(myAlbums, key = { "a-" + it.key }) { a ->
             AlbumTile(

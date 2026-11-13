@@ -33,6 +33,8 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 data class Adjust(
+    /** In stops: -1 halves the light, +1 doubles it. */
+    val exposure: Float = 0f,
     val brightness: Float = 0f,
     val contrast: Float = 0f,
     val saturation: Float = 0f,
@@ -165,6 +167,10 @@ object EditEngine {
     fun colorMatrix(p: EditParams): ColorMatrix {
         val a = p.adjust
         val m = ColorMatrix()
+        if (a.exposure != 0f) {
+            val k = Math.pow(2.0, a.exposure.toDouble()).toFloat()
+            m.postConcat(scaleRgb(k, k, k))
+        }
         if (p.filter != "Original") m.postConcat(blendMatrix(filterMatrix(p.filter), p.filterAmount))
         if (a.saturation != 0f) m.postConcat(sat(1f + a.saturation))
         if (a.contrast != 0f) m.postConcat(contrast(if (a.contrast > 0) 1f + a.contrast * 0.6f else 1f + a.contrast * 0.5f))

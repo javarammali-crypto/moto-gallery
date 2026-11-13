@@ -98,6 +98,7 @@ fun NameDialog(
     onSave: (String) -> Unit,
     title: String = "Who is this?",
     allowEmpty: Boolean = false,
+    placeholder: String = "Name",
 ) {
     val c = GalleryTheme.colors
     var text by remember(visible) { mutableStateOf(initial) }
@@ -141,7 +142,7 @@ fun NameDialog(
                             .background(c.glassHighlight)
                             .padding(horizontal = 14.dp, vertical = 13.dp),
                     ) {
-                        if (text.isEmpty()) Text("Name", color = c.secondary, style = MaterialTheme.typography.bodyMedium)
+                        if (text.isEmpty()) Text(placeholder, color = c.secondary, style = MaterialTheme.typography.bodyMedium)
                         BasicTextField(
                             value = text,
                             onValueChange = { text = it },

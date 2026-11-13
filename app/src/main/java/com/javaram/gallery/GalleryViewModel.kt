@@ -47,8 +47,19 @@ sealed interface UpdateState {
 }
 
 enum class MediaFilter(val label: String) {
-    All("All items"), Photos("Photos only"), Videos("Videos only"), Favorites("Favourites")
+    All("All items"), Camera("Camera only"), Photos("Photos only"), Videos("Videos only"), Favorites("Favourites")
 }
+
+/** Photos taken with the phone's camera (not screenshots, downloads or app folders). */
+fun Media.isCameraShot(): Boolean =
+    relativePath.startsWith("DCIM/", ignoreCase = true) && !relativePath.contains("Screenshot", ignoreCase = true)
+
+private val musicDirs = listOf("Music/", "Audiobooks/", "Podcasts/", "Ringtones/", "Notifications/", "Alarms/", "Recordings/")
+private val coverArt = Regex("""^(folder|cover|front|albumart.*|album_art.*|thumb)\.(jpe?g|png|webp)$""", RegexOption.IGNORE_CASE)
+
+/** Album covers that music players keep next to songs — not real photos. */
+fun Media.isMusicArt(): Boolean =
+    !isVideo && (musicDirs.any { relativePath.startsWith(it, ignoreCase = true) } || coverArt.matches(name))
 
 enum class AlbumSort(val label: String) {
     Recent("Most recent"), Name("Name"), Count("Number of items")
@@ -59,8 +70,76 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = MediaRepository(app)
     private val prefs = app.getSharedPreferences("gallery", Context.MODE_PRIVATE)
 
+    /** Everything MediaStore has, before hidden folders are taken out. */
+    private val _raw = MutableStateFlow<List<Media>>(emptyList())
     private val _all = MutableStateFlow<List<Media>>(emptyList())
     val all: StateFlow<List<Media>> = _all.asStateFlow()
+
+    // --- Hidden folders ---
+    private val _hiddenBuckets = MutableStateFlow(prefs.getStringSet("hiddenBuckets", emptySet())!!.toSet())
+    val hiddenBuckets: StateFlow<Set<String>> = _hiddenBuckets.asStateFlow()
+    private val _hideMusicArt = MutableStateFlow(prefs.getBoolean("hideMusicArt", true))
+    val hideMusicArt: StateFlow<Boolean> = _hideMusicArt.asStateFlow()
+
+    private fun visible(items: List<Media>, hidden: Set<String>, music: Boolean): List<Media> =
+        items.filter { it.bucketId.toString() !in hidden && !(music && it.isMusicArt()) }
+
+    private fun applyHidden() {
+        _all.value = visible(_raw.value, _hiddenBuckets.value, _hideMusicArt.value)
+    }
+
+    /** Folders the user hid, so they can be shown again. */
+    val hiddenAlbums: StateFlow<List<Album>> =
+        combine(_raw, _hiddenBuckets) { items, hidden ->
+            items.filter { it.bucketId.toString() in hidden }.groupBy { it.bucketId }.map { (id, media) ->
+                Album(id.toString(), media.first().bucketName, media.first(), media.size, media.first().dateTaken)
+            }.sortedBy { it.name.lowercase() }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun setAlbumHidden(key: String, hidden: Boolean) {
+        val next = _hiddenBuckets.value.toMutableSet().apply { if (hidden) add(key) else remove(key) }
+        _hiddenBuckets.value = next
+        prefs.edit().putStringSet("hiddenBuckets", next).apply()
+        applyHidden()
+    }
+
+    fun setHideMusicArt(hide: Boolean) {
+        _hideMusicArt.value = hide
+        prefs.edit().putBoolean("hideMusicArt", hide).apply()
+        applyHidden()
+    }
+
+    // --- Albums: create, copy, move ---
+    private val _albumBusy = MutableStateFlow<String?>(null)
+    /** Progress text while copying or moving items into an album. */
+    val albumBusy: StateFlow<String?> = _albumBusy.asStateFlow()
+
+    fun writeRequest(items: Collection<Media>): PendingIntent =
+        com.javaram.gallery.data.AlbumOps.writeRequest(getApplication(), items)
+
+    /** Copies (or, once write access is granted, moves) items into the folder at [path]. */
+    fun addToAlbum(items: List<Media>, path: String, move: Boolean, done: (Int) -> Unit) {
+        viewModelScope.launch {
+            val verb = if (move) "Moving" else "Copying"
+            val n = if (move) {
+                com.javaram.gallery.data.AlbumOps.move(getApplication(), items, path) { i ->
+                    _albumBusy.value = "$verb… ${i + 1} of ${items.size}"
+                }
+            } else {
+                com.javaram.gallery.data.AlbumOps.copy(getApplication(), items, path) { i ->
+                    _albumBusy.value = "$verb… ${i + 1} of ${items.size}"
+                }
+            }
+            _albumBusy.value = null
+            scheduleRefresh(0)
+            done(n)
+        }
+    }
+
+    /** Folder path of an existing album (null for albums Android won't let apps add to). */
+    fun albumPath(key: String): String? =
+        _raw.value.firstOrNull { it.bucketId.toString() == key }?.relativePath
+            ?.takeIf { com.javaram.gallery.data.AlbumOps.canHold(it) }
 
     private val _trash = MutableStateFlow<List<Media>>(emptyList())
     val trash: StateFlow<List<Media>> = _trash.asStateFlow()
@@ -68,7 +147,15 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _loaded = MutableStateFlow(false)
     val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
 
-    val filter = MutableStateFlow(MediaFilter.All)
+    private val _filter = MutableStateFlow(
+        runCatching { MediaFilter.valueOf(prefs.getString("filter", null) ?: "") }.getOrDefault(MediaFilter.All)
+    )
+    val filter: StateFlow<MediaFilter> = _filter.asStateFlow()
+
+    fun setFilter(f: MediaFilter) {
+        _filter.value = f
+        prefs.edit().putString("filter", f.name).apply()
+    }
 
     private val _columns = MutableStateFlow(prefs.getInt("columns", 4))
     val columns: StateFlow<Int> = _columns.asStateFlow()
@@ -160,9 +247,10 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         refreshJob = viewModelScope.launch {
             delay(delayMs)
             val items = withContext(Dispatchers.IO) { repo.load(trashed = false) }
-            _all.value = items
+            _raw.value = items
+            applyHidden()
             _loaded.value = true
-            startIndexing(items)
+            startIndexing(_all.value)
             if (_trash.value.isNotEmpty() || trashLoaded) loadTrash()
         }
     }

@@ -39,6 +39,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.DocumentScanner
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Info
@@ -187,8 +188,14 @@ fun ViewerOverlay(
         val hideInSafe = com.javaram.gallery.ui.safe.rememberHideInSafe(vm)
         var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
         val zoomStates = remember { mutableStateMapOf<Long, ZoomableImageState>() }
+        val lens = remember { LensState() }
+        val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+        val index by vm.index.collectAsStateWithLifecycle()
 
-        LaunchedEffect(current?.id) { onCurrentChanged(current?.id) }
+        LaunchedEffect(current?.id) {
+            onCurrentChanged(current?.id)
+            lens.close()
+        }
 
         fun aspect(m: Media): Float =
             if (m.displayWidth > 0 && m.displayHeight > 0) m.displayWidth.toFloat() / m.displayHeight else 1f
@@ -216,8 +223,16 @@ fun ViewerOverlay(
             }
         }
 
-        fun dragScale(): Float = (1f - abs(drag.value.y) / h * 0.9f).coerceIn(0.4f, 1f)
-        fun dragBg(): Float = (1f - abs(drag.value.y) / (h * 0.4f)).coerceIn(0f, 1f)
+        // Only dragging down shrinks the photo; dragging up reveals the details.
+        fun dragScale(): Float = (1f - drag.value.y.coerceAtLeast(0f) / h * 0.9f).coerceIn(0.4f, 1f)
+        fun dragBg(): Float = (1f - drag.value.y.coerceAtLeast(0f) / (h * 0.4f)).coerceIn(0f, 1f)
+
+        /** Where the current photo is drawn on screen (follows zoom and pan). */
+        fun contentBounds(m: Media): Rect {
+            val zs = zoomStates[m.id]?.zoomableState
+            val b = zs?.transformedContentBounds
+            return if (b != null && b.width > 2f && b.height > 2f) b else fitRect(m)
+        }
 
         fun draggedRect(m: Media): Rect {
             val f = fitRect(m)
@@ -285,6 +300,7 @@ fun ViewerOverlay(
 
         BackHandler(enabled = phase != Phase.Closing) {
             when {
+                lens.active -> lens.close()
                 wallpaperFor != null -> wallpaperFor = null
                 confirm != null -> confirm = null
                 showMore -> showMore = false
@@ -342,13 +358,14 @@ fun ViewerOverlay(
                     val slop = viewConfiguration.touchSlop
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                        if (phase != Phase.Open) return@awaitEachGesture
+                        if (phase != Phase.Open || lens.active) return@awaitEachGesture
                         val m = currentRef ?: return@awaitEachGesture
                         if ((zoomStates[m.id]?.zoomableState?.zoomFraction ?: 0f) > 0.02f) return@awaitEachGesture
                         val tracker = VelocityTracker()
                         tracker.addPosition(down.uptimeMillis, down.position)
                         var total = Offset.Zero
                         var started = false
+                        var up = false
                         var cancelled = false
                         while (true) {
                             val ev = awaitPointerEvent(PointerEventPass.Initial)
@@ -362,19 +379,29 @@ fun ViewerOverlay(
                                 if (total.getDistance() > slop) {
                                     if (abs(total.y) > abs(total.x) * 1.15f) {
                                         started = true
-                                        chrome = false
+                                        up = total.y < 0f
+                                        if (!up) chrome = false
                                     } else return@awaitEachGesture
                                 }
                             }
                             if (started) {
                                 ch.consume()
-                                val target = drag.value + delta
+                                val target = if (up) {
+                                    // Resist upward: the photo nudges up a little, then details open.
+                                    Offset(0f, (drag.value.y + delta.y * 0.4f).coerceIn(-h * 0.18f, 0f))
+                                } else drag.value + delta
                                 scope.launch { drag.snapTo(target) }
                             }
                         }
                         if (!started) return@awaitEachGesture
                         val v = tracker.calculateVelocity()
-                        if (!cancelled && (abs(drag.value.y) > h * 0.1f || abs(v.y) > 1400f)) {
+                        if (up) {
+                            if (!cancelled && (drag.value.y < -h * 0.05f || v.y < -900f)) {
+                                chrome = true
+                                showInfo = true
+                            }
+                            scope.launch { drag.animateTo(Offset.Zero, spring(dampingRatio = 0.8f, stiffness = 420f)) }
+                        } else if (!cancelled && (abs(drag.value.y) > h * 0.1f || abs(v.y) > 1400f)) {
                             close()
                         } else {
                             scope.launch {
@@ -386,6 +413,7 @@ fun ViewerOverlay(
         ) {
             HorizontalPager(
                 state = pager,
+                userScrollEnabled = !lens.active,
                 key = { items.getOrNull(it)?.id ?: it },
                 beyondViewportPageCount = 1,
                 pageSpacing = 16.dp,
@@ -413,9 +441,22 @@ fun ViewerOverlay(
                         state = zs,
                         modifier = Modifier.fillMaxSize(),
                         onClick = { chrome = !chrome },
+                        onLongClick = { p ->
+                            if (!session.trash) {
+                                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                lens.begin(scope, context, m, p, { contentBounds(m) }) {
+                                    haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                }
+                            }
+                        },
                     )
                 }
             }
+        }
+
+        // ---- Live text and lifted subjects ----
+        if (phase == Phase.Open) {
+            LensOverlay(lens, haze) { currentRef?.let { contentBounds(it) } }
         }
 
         // ---- Flying photo used while opening and closing ----
@@ -451,7 +492,7 @@ fun ViewerOverlay(
         }
 
         // ---- Controls ----
-        val showChrome = chrome && phase == Phase.Open && current != null
+        val showChrome = chrome && phase == Phase.Open && current != null && !lens.active
         AnimatedVisibility(
             visible = showChrome,
             enter = fadeIn(tween(200)) + slideInVertically { -it / 2 },
@@ -548,6 +589,23 @@ fun ViewerOverlay(
                         }
                     }
                 }
+            }
+        }
+
+        val hasText = current != null && !current.isVideo && !session.trash &&
+            (index[current.id]?.text?.isNotBlank() == true)
+        AnimatedVisibility(
+            visible = showChrome && hasText,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 16.dp, bottom = 96.dp),
+            enter = fadeIn(tween(200)) + androidx.compose.animation.scaleIn(initialScale = 0.8f),
+            exit = fadeOut(tween(140)) + androidx.compose.animation.scaleOut(targetScale = 0.8f),
+        ) {
+            GlassIconButton(haze, Icons.Outlined.DocumentScanner, "Select text", size = 44.dp) {
+                val m = current ?: return@GlassIconButton
+                lens.begin(scope, context, m, null, { contentBounds(m) }) {}
             }
         }
 

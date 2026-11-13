@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.ui.layout.layout
 import androidx.compose.runtime.setValue
@@ -222,7 +224,12 @@ fun GlassActionSheet(
                 shape = RoundedCornerShape(30.dp),
                 contentAlignment = Alignment.TopStart,
             ) {
-                Column(Modifier.padding(vertical = 10.dp)) {
+                Column(
+                    Modifier
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                        .padding(vertical = 10.dp)
+                ) {
                     if (title != null) {
                         Text(
                             title,

@@ -143,6 +143,29 @@ fun UpdateDialog(
                         color = c.secondary,
                         textAlign = TextAlign.Center,
                     )
+                    val news = remember(i.notes) {
+                        i.notes.lines().map { it.trim() }.filter { it.startsWith("- ") }.map { it.removePrefix("- ") }.take(9)
+                    }
+                    if (news.isNotEmpty() && state is UpdateState.Available) {
+                        Spacer(Modifier.height(14.dp))
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(c.glassHighlight)
+                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            Text("What's new", style = MaterialTheme.typography.titleSmall, color = c.content)
+                            news.forEach { line ->
+                                Text(
+                                    "•  $line",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = c.secondary,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(18.dp))
                     if (busy) {
                         Box(

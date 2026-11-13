@@ -35,6 +35,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.material.icons.outlined.HdrStrong
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -136,18 +140,20 @@ private enum class Tool(val label: String, val icon: ImageVector) {
 }
 
 private enum class AdjustParam(val label: String, val icon: ImageVector, val signed: Boolean = true) {
+    Exposure("Exposure", Icons.Outlined.Exposure),
     Brightness("Brightness", Icons.Outlined.LightMode),
     Contrast("Contrast", Icons.Outlined.Contrast),
     Saturation("Saturation", Icons.Outlined.Palette),
     Warmth("Warmth", Icons.Outlined.Thermostat),
     Tint("Tint", Icons.Outlined.InvertColors),
-    Highlights("Highlights", Icons.Outlined.Exposure),
+    Highlights("Highlights", Icons.Outlined.HdrStrong),
     Shadows("Shadows", Icons.Outlined.WbShade),
     Fade("Fade", Icons.Outlined.Gradient, signed = false),
     Vignette("Vignette", Icons.Outlined.Vignette, signed = false),
 }
 
 private fun Adjust.get(p: AdjustParam) = when (p) {
+    AdjustParam.Exposure -> exposure
     AdjustParam.Brightness -> brightness
     AdjustParam.Contrast -> contrast
     AdjustParam.Saturation -> saturation
@@ -160,6 +166,7 @@ private fun Adjust.get(p: AdjustParam) = when (p) {
 }
 
 private fun Adjust.with(p: AdjustParam, v: Float) = when (p) {
+    AdjustParam.Exposure -> copy(exposure = v)
     AdjustParam.Brightness -> copy(brightness = v)
     AdjustParam.Contrast -> copy(contrast = v)
     AdjustParam.Saturation -> copy(saturation = v)
@@ -204,7 +211,7 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
     var loadFailed by remember { mutableStateOf(false) }
     var params by remember { mutableStateOf(EditParams()) }
     var tool by remember { mutableStateOf(Tool.Adjust) }
-    var param by remember { mutableStateOf(AdjustParam.Brightness) }
+    var param by remember { mutableStateOf(AdjustParam.Exposure) }
     var oriented by remember { mutableStateOf<Bitmap?>(null) }
     var subject by remember { mutableStateOf<Bitmap?>(null) }
     var subjectKey by remember { mutableStateOf<Geometry?>(null) }
@@ -752,14 +759,20 @@ private fun AdjustPanel(adjust: Adjust, selected: AdjustParam, onSelect: (Adjust
             Text("${(v * 100).roundToInt()}", color = Color.White, fontSize = 12.sp, modifier = Modifier.width(36.dp))
         }
         Spacer(Modifier.height(10.dp))
+        val row = rememberLazyListState()
+        val scope = rememberCoroutineScope()
         LazyRow(
+            state = row,
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             items(AdjustParam.entries) { p ->
                 val sel = p == selected
                 val value = adjust.get(p)
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.pressable { onSelect(p) }) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.pressable {
+                    if (!sel) scope.launch { row.advancePast(p.ordinal) }
+                    onSelect(p)
+                }) {
                     Box(
                         Modifier
                             .size(48.dp)
@@ -807,13 +820,19 @@ private fun FilterPanel(thumb: Bitmap?, selected: String, amount: Float, onSelec
             }
         }
         Spacer(Modifier.height(6.dp))
+        val row = rememberLazyListState()
+        val scope = rememberCoroutineScope()
         LazyRow(
+            state = row,
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            items(EditEngine.filterNames) { name ->
+            itemsIndexed(EditEngine.filterNames) { i, name ->
                 val sel = name == selected
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.pressable { onSelect(name) }) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.pressable {
+                    if (!sel) scope.launch { row.advancePast(i) }
+                    onSelect(name)
+                }) {
                     Box(
                         Modifier
                             .size(64.dp)
@@ -851,13 +870,19 @@ private fun BackgroundPanel(selected: Background, busy: Boolean, onSelect: (Back
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
         Spacer(Modifier.height(6.dp))
+        val row = rememberLazyListState()
+        val scope = rememberCoroutineScope()
         LazyRow(
+            state = row,
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(bgOptions) { o ->
+            itemsIndexed(bgOptions) { i, o ->
                 val sel = o.value == selected
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.pressable(enabled = !busy) { onSelect(o.value) }) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.pressable(enabled = !busy) {
+                    if (!sel) scope.launch { row.advancePast(i) }
+                    onSelect(o.value)
+                }) {
                     Box(
                         Modifier
                             .size(52.dp)
@@ -879,4 +904,17 @@ private fun BackgroundPanel(selected: Background, busy: Boolean, onSelect: (Back
             }
         }
     }
+}
+
+/**
+ * After tapping an item, slide the row by one item so the next option lands under the
+ * finger: tapping through options doesn't need the finger to move.
+ */
+private suspend fun androidx.compose.foundation.lazy.LazyListState.advancePast(index: Int) {
+    val info = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+    if (index >= layoutInfo.totalItemsCount - 1) return
+    animateScrollBy(
+        (info.size + layoutInfo.mainAxisItemSpacing).toFloat(),
+        androidx.compose.animation.core.spring(dampingRatio = 0.85f, stiffness = 380f),
+    )
 }

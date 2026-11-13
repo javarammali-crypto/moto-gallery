@@ -57,6 +57,10 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.ViewComfy
 import androidx.compose.material.icons.outlined.ViewModule
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.MusicOff
+import androidx.compose.material.icons.outlined.LibraryAdd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -80,6 +84,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.javaram.gallery.AlbumSort
 import com.javaram.gallery.GalleryViewModel
 import com.javaram.gallery.MediaFilter
+import com.javaram.gallery.isCameraShot
+import com.javaram.gallery.util.toLocalDate
 import com.javaram.gallery.data.Album
 import com.javaram.gallery.data.Media
 import com.javaram.gallery.ui.components.GlassActionSheet
@@ -121,6 +127,7 @@ private sealed interface HomeSheet {
     data object More : HomeSheet
     data object Sort : HomeSheet
     data class AlbumMenu(val album: Album) : HomeSheet
+    data object Hidden : HomeSheet
 }
 
 @Composable
@@ -147,6 +154,9 @@ fun HomeScreen(
     val update by vm.update.collectAsStateWithLifecycle()
     val people by vm.people.collectAsStateWithLifecycle()
     val memories by vm.memories.collectAsStateWithLifecycle()
+    val hiddenAlbums by vm.hiddenAlbums.collectAsStateWithLifecycle()
+    val hideMusicArt by vm.hideMusicArt.collectAsStateWithLifecycle()
+    val albumFlow = com.javaram.gallery.ui.album.rememberAddToAlbum()
 
     var selectionMode by rememberSaveable { mutableStateOf(false) }
     var selection by remember { mutableStateOf(emptySet<Long>()) }
@@ -167,6 +177,7 @@ fun HomeScreen(
     val photos = remember(all, filter) {
         when (filter) {
             MediaFilter.All -> all
+            MediaFilter.Camera -> all.filter { it.isCameraShot() }
             MediaFilter.Photos -> all.filter { !it.isVideo }
             MediaFilter.Videos -> all.filter { it.isVideo }
             MediaFilter.Favorites -> all.filter { it.isFavorite }
@@ -199,6 +210,18 @@ fun HomeScreen(
     }
     val collapsed by remember(activeState) {
         derivedStateOf { activeState.firstVisibleItemIndex > 0 || activeState.firstVisibleItemScrollOffset > 160 }
+    }
+    // Month and year of the photos at the top of the screen, shown in the bar while scrolling.
+    val topBarHeight = with(androidx.compose.ui.platform.LocalDensity.current) { 110.dp.roundToPx() }
+    val scrolledMonth by remember(photosState, byId) {
+        derivedStateOf {
+            val info = photosState.layoutInfo.visibleItemsInfo
+            val firstPhoto = info.firstOrNull { it.key is Long && it.offset.y + it.size.height > topBarHeight }
+                ?: info.firstOrNull { it.key is Long }
+            (firstPhoto?.key as? Long)?.let { byId[it] }?.let {
+                com.javaram.gallery.util.monthLabel(it.dateTaken.toLocalDate())
+            }
+        }
     }
 
     Box(Modifier.fillMaxSize().background(GalleryTheme.colors.background)) {
@@ -243,6 +266,7 @@ fun HomeScreen(
                         onOpenPeople = onOpenPeople,
                         onOpenPerson = onOpenPerson,
                         onOpenSafe = { onOpenRoute("safe") },
+                        onNewAlbum = { albumFlow.newAlbum() },
                     )
                     HomeTab.Create -> CreateTab(
                         state = createState,
@@ -308,12 +332,22 @@ fun HomeScreen(
                         enter = fadeIn() + slideInVertically { it / 2 },
                         exit = fadeOut() + slideOutVertically { it / 2 },
                     ) {
-                        Text(
-                            tab.label,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = GalleryTheme.colors.content,
-                            modifier = Modifier.padding(start = 6.dp),
-                        )
+                        val label = if (tab == HomeTab.Photos) scrolledMonth ?: tab.label else tab.label
+                        AnimatedContent(
+                            targetState = label,
+                            transitionSpec = {
+                                (fadeIn(tween(180)) + slideInVertically { it / 3 }) togetherWith
+                                    (fadeOut(tween(120)) + slideOutVertically { -it / 3 })
+                            },
+                            label = "month",
+                        ) { text ->
+                            Text(
+                                text,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = GalleryTheme.colors.content,
+                                modifier = Modifier.padding(start = 6.dp),
+                            )
+                        }
                     }
                 }
                 if (tab != HomeTab.Create) {
@@ -356,6 +390,7 @@ fun HomeScreen(
                         onShare = { shareMedia(context, selectedItems) },
                         onFavorite = { request(vm.favoriteRequest(selectedItems, !allFav)) },
                         onHide = { hideInSafe(selectedItems) },
+                        onAddToAlbum = { albumFlow.start(selectedItems) },
                         onDelete = {
                             val items = selectedItems
                             val doIt = { request(vm.trashRequest(items)) }
@@ -389,7 +424,7 @@ fun HomeScreen(
         val s = sheet
         val popupOptions: List<SheetOption> = when (s) {
             HomeSheet.Filter -> MediaFilter.entries.map { f ->
-                SheetOption(f.label, selected = f == filter) { vm.filter.value = f }
+                SheetOption(f.label, selected = f == filter) { vm.setFilter(f) }
             }
             HomeSheet.Layout -> listOf(
                 Triple(3, "Comfortable", Icons.Outlined.ViewComfy),
@@ -406,6 +441,7 @@ fun HomeScreen(
                 add(SheetOption("Recently deleted", Icons.Outlined.AutoDelete) { onOpenTrash() })
                 add(SheetOption("Private safe", Icons.Outlined.Lock) { onOpenRoute("safe") })
                 add(SheetOption("Cleanup", Icons.Outlined.Refresh) { onOpenRoute("cleanup") })
+                add(SheetOption("Hidden albums", Icons.Outlined.VisibilityOff) { sheet = HomeSheet.Hidden })
                 add(SheetOption("Check for updates", Icons.Outlined.SystemUpdate) { vm.checkForUpdates(manual = true) })
                 if (!canManage) {
                     add(SheetOption("Skip pop-ups", Icons.Outlined.VerifiedUser, subtitle = "Manage media access") {
@@ -453,8 +489,45 @@ fun HomeScreen(
                     vm.togglePin(albumMenu.album.key)
                 },
                 SheetOption("Open", Icons.Outlined.PhotoLibrary) { onOpenAlbum(albumMenu.album.key) },
+                SheetOption("Hide album", Icons.Outlined.VisibilityOff, subtitle = "Keep it out of Photos and Albums") {
+                    vm.setAlbumHidden(albumMenu.album.key, true)
+                    com.javaram.gallery.ui.components.toast(context, "Album hidden. Find it under ⋮ › Hidden albums")
+                },
             ),
-            onDismiss = { sheet = null },
+            onDismiss = { if (sheet is HomeSheet.AlbumMenu) sheet = null },
+        )
+
+        GlassActionSheet(
+            visible = s == HomeSheet.Hidden,
+            state = haze,
+            title = "Hidden albums",
+            options = buildList {
+                add(
+                    SheetOption(
+                        "Hide music cover art",
+                        Icons.Outlined.MusicOff,
+                        selected = hideMusicArt,
+                        subtitle = "Album art saved in music folders",
+                    ) { vm.setHideMusicArt(!hideMusicArt) }
+                )
+                if (hiddenAlbums.isEmpty()) {
+                    add(SheetOption("No hidden albums", subtitle = "Long-press an album to hide it") {})
+                }
+                hiddenAlbums.forEach { a ->
+                    add(SheetOption(a.name, Icons.Outlined.Visibility, subtitle = "${a.count} items · Tap to show again") {
+                        vm.setAlbumHidden(a.key, false)
+                    })
+                }
+            },
+            onDismiss = { if (sheet == HomeSheet.Hidden) sheet = null },
+        )
+
+        com.javaram.gallery.ui.album.AddToAlbumFlow(
+            state = albumFlow,
+            vm = vm,
+            haze = haze,
+            onNamedEmpty = { name -> onOpenRoute("albumpick/" + android.net.Uri.encode(name)) },
+            onDone = { exitSelection() },
         )
 
         GlassDialog(request = confirm, state = haze, onDismiss = { confirm = null })
@@ -593,20 +666,24 @@ fun SelectionBar(
     onFavorite: () -> Unit,
     onDelete: () -> Unit,
     onHide: (() -> Unit)? = null,
+    onAddToAlbum: (() -> Unit)? = null,
 ) {
+    val count = 3 + (if (onHide != null) 1 else 0) + (if (onAddToAlbum != null) 1 else 0)
+    val w = if (count >= 5) 70.dp else 86.dp
     GlassSurface(haze, Modifier.height(66.dp), shape = CircleShape) {
         Row(
-            Modifier.padding(horizontal = 10.dp).alpha(if (enabled) 1f else 0.45f),
+            Modifier.padding(horizontal = 8.dp).alpha(if (enabled) 1f else 0.45f),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            BarAction(Icons.Outlined.Share, "Share", enabled, onShare)
+            BarAction(Icons.Outlined.Share, "Share", enabled, onShare, width = w)
             BarAction(
                 if (allFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                 if (allFavorite) "Unfavourite" else "Favourite",
-                enabled, onFavorite,
+                enabled, onFavorite, width = w,
             )
-            if (onHide != null) BarAction(Icons.Outlined.Lock, "Hide", enabled, onHide)
-            BarAction(Icons.Outlined.DeleteOutline, "Delete", enabled, onDelete, tint = Color(0xFFFF453A))
+            if (onAddToAlbum != null) BarAction(Icons.Outlined.LibraryAdd, "Album", enabled, onAddToAlbum, width = w)
+            if (onHide != null) BarAction(Icons.Outlined.Lock, "Hide", enabled, onHide, width = w)
+            BarAction(Icons.Outlined.DeleteOutline, "Delete", enabled, onDelete, tint = Color(0xFFFF453A), width = w)
         }
     }
 }
@@ -618,10 +695,11 @@ fun BarAction(
     enabled: Boolean,
     onClick: () -> Unit,
     tint: Color = GalleryTheme.colors.content,
+    width: androidx.compose.ui.unit.Dp = 86.dp,
 ) {
     Column(
         Modifier
-            .width(86.dp)
+            .width(width)
             .fillMaxHeight()
             .pressable(enabled = enabled, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
