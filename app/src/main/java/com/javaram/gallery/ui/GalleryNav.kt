@@ -46,6 +46,9 @@ object Routes {
 @Composable
 fun GalleryNav(vm: GalleryViewModel) {
     val nav = rememberNavController()
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        vm.glass.collect { com.javaram.gallery.ui.components.GlassLook.frost = it }
+    }
 
     Box(Modifier.fillMaxSize().background(GalleryTheme.colors.background)) {
         NavHost(
@@ -110,6 +113,12 @@ fun GalleryNav(vm: GalleryViewModel) {
             composable("albumpick/{name}") { entry ->
                 com.javaram.gallery.ui.album.AlbumPickScreen(
                     vm, name = entry.arguments?.getString("name") ?: "New album",
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable("albumcover/{key}") { entry ->
+                com.javaram.gallery.ui.album.AlbumCoverScreen(
+                    vm, key = entry.arguments?.getString("key") ?: "",
                     onBack = { nav.popBackStack() },
                 )
             }

@@ -62,13 +62,34 @@ import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeChild
 
+/**
+ * How frosted the app's glass is, from 0 (clearest) to 1 (most frosted); 0.5 is the default
+ * look. Set from Settings and applied to every bar, dock, menu and sheet that uses the
+ * standard glass (pop-ups with text keep their own, readable glass).
+ */
+object GlassLook {
+    var frost by androidx.compose.runtime.mutableFloatStateOf(0.5f)
+
+    /** Opacity of the glass tint at the current setting, around the theme's own [base]. */
+    fun tintAlpha(base: Float, dark: Boolean): Float {
+        val f = frost.coerceIn(0f, 1f)
+        val clearest = base * 0.15f
+        val most = if (dark) 0.78f else 0.82f
+        return if (f <= 0.5f) clearest + (base - clearest) * (f / 0.5f)
+        else base + (most - base) * ((f - 0.5f) / 0.5f)
+    }
+
+    fun blurScale(): Float = 0.6f + 0.8f * frost.coerceIn(0f, 1f)
+}
+
 @Composable
 fun glassStyle(blur: Dp = 34.dp, tint: Color? = null): HazeStyle {
     val c = GalleryTheme.colors
+    val t = tint ?: c.glassTint.copy(alpha = GlassLook.tintAlpha(c.glassTint.alpha, c.dark))
     return HazeStyle(
         backgroundColor = c.background,
-        tints = listOf(HazeTint(tint ?: c.glassTint)),
-        blurRadius = blur,
+        tints = listOf(HazeTint(t)),
+        blurRadius = if (tint == null) blur * GlassLook.blurScale() else blur,
         noiseFactor = 0.035f,
     )
 }

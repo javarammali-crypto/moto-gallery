@@ -61,12 +61,17 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.MusicOff
 import androidx.compose.material.icons.outlined.LibraryAdd
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.BlurOn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import com.javaram.gallery.ui.components.noRippleClickable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -128,6 +133,7 @@ private sealed interface HomeSheet {
     data object Sort : HomeSheet
     data class AlbumMenu(val album: Album, val anchor: androidx.compose.ui.geometry.Rect?) : HomeSheet
     data object Hidden : HomeSheet
+    data object Glass : HomeSheet
 }
 
 @Composable
@@ -156,6 +162,7 @@ fun HomeScreen(
     val memories by vm.memories.collectAsStateWithLifecycle()
     val hiddenAlbums by vm.hiddenAlbums.collectAsStateWithLifecycle()
     val hideMusicArt by vm.hideMusicArt.collectAsStateWithLifecycle()
+    val glassValue by vm.glass.collectAsStateWithLifecycle()
     val albumFlow = com.javaram.gallery.ui.album.rememberAddToAlbum()
 
     var selectionMode by rememberSaveable { mutableStateOf(false) }
@@ -333,6 +340,7 @@ fun HomeScreen(
                         exit = fadeOut() + slideOutVertically { it / 2 },
                     ) {
                         val label = if (tab == HomeTab.Photos) scrolledMonth ?: tab.label else tab.label
+                        val topScope = rememberCoroutineScope()
                         AnimatedContent(
                             targetState = label,
                             transitionSpec = {
@@ -345,7 +353,10 @@ fun HomeScreen(
                                 text,
                                 style = MaterialTheme.typography.titleMedium,
                                 color = GalleryTheme.colors.content,
-                                modifier = Modifier.padding(start = 6.dp),
+                                // Tapping the title jumps back to the top.
+                                modifier = Modifier
+                                    .padding(start = 6.dp)
+                                    .noRippleClickable { topScope.launch { scrollToTop(activeState) } },
                             )
                         }
                     }
@@ -442,6 +453,7 @@ fun HomeScreen(
                 add(SheetOption("Private safe", Icons.Outlined.Lock) { onOpenRoute("safe") })
                 add(SheetOption("Cleanup", Icons.Outlined.Refresh) { onOpenRoute("cleanup") })
                 add(SheetOption("Hidden albums", Icons.Outlined.VisibilityOff) { sheet = HomeSheet.Hidden })
+                add(SheetOption("Glass look", Icons.Outlined.BlurOn) { sheet = HomeSheet.Glass })
                 add(SheetOption("Check for updates", Icons.Outlined.SystemUpdate) { vm.checkForUpdates(manual = true) })
                 if (!canManage) {
                     add(SheetOption("Skip pop-ups", Icons.Outlined.VerifiedUser, subtitle = "Manage media access") {
@@ -484,6 +496,29 @@ fun HomeScreen(
         var lastAlbumMenu by remember { mutableStateOf<HomeSheet.AlbumMenu?>(null) }
         if (openAlbumMenu != null) lastAlbumMenu = openAlbumMenu
         val albumMenu = openAlbumMenu ?: lastAlbumMenu
+        // Back to top: appears once you've scrolled a long way down.
+        val farDown by remember(activeState) { derivedStateOf { activeState.firstVisibleItemIndex > 40 } }
+        val topScope2 = rememberCoroutineScope()
+        androidx.compose.animation.AnimatedVisibility(
+            visible = farDown && !selectionMode && s == null,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 18.dp, bottom = 100.dp),
+            enter = fadeIn(tween(200)) + androidx.compose.animation.scaleIn(initialScale = 0.6f),
+            exit = fadeOut(tween(150)) + androidx.compose.animation.scaleOut(targetScale = 0.6f),
+        ) {
+            GlassIconButton(haze, Icons.Outlined.ArrowUpward, "Back to top", size = 48.dp) {
+                topScope2.launch { scrollToTop(activeState) }
+            }
+        }
+        com.javaram.gallery.ui.components.GlassLookSheet(
+            visible = s == HomeSheet.Glass,
+            haze = haze,
+            value = glassValue,
+            onChange = vm::setGlass,
+            onDismiss = { if (sheet == HomeSheet.Glass) sheet = null },
+        )
         val screenH = with(androidx.compose.ui.platform.LocalDensity.current) {
             androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx()
         }
@@ -496,6 +531,7 @@ fun HomeScreen(
             title = albumMenu?.album?.name,
             options = if (albumMenu == null) emptyList() else listOf(
                 SheetOption("Open", Icons.Outlined.PhotoLibrary) { onOpenAlbum(albumMenu.album.key) },
+                SheetOption("Change cover", Icons.Outlined.Image) { onOpenRoute("albumcover/" + albumMenu.album.key) },
                 SheetOption(if (albumMenu.album.pinned) "Unpin from top" else "Pin to top", Icons.Outlined.PushPin) {
                     vm.togglePin(albumMenu.album.key)
                 },
@@ -784,4 +820,10 @@ fun ManageBanner(onAllow: () -> Unit, onDismiss: () -> Unit) {
             modifier = Modifier.size(34.dp).pressable(onClick = onDismiss).padding(8.dp),
         )
     }
+}
+
+/** Smooth jump to the top: far lists first hop close, then glide the rest. */
+private suspend fun scrollToTop(state: LazyGridState) {
+    if (state.firstVisibleItemIndex > 60) state.scrollToItem(30)
+    state.animateScrollToItem(0)
 }

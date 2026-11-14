@@ -174,9 +174,32 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _bannerDismissed = MutableStateFlow(prefs.getBoolean("manageBannerDismissed", false))
     val bannerDismissed: StateFlow<Boolean> = _bannerDismissed.asStateFlow()
 
+    /** Album key → id of the photo the user picked as its cover. */
+    private val _covers = MutableStateFlow(
+        prefs.getStringSet("covers", emptySet())!!.mapNotNull { e ->
+            e.split('=').takeIf { it.size == 2 }?.let { (k, v) -> v.toLongOrNull()?.let { k to it } }
+        }.toMap()
+    )
+
     val albums: StateFlow<List<Album>> =
-        combine(_all, _albumSort, _pinned) { items, sort, pins -> buildAlbums(items, sort, pins) }
+        combine(_all, _albumSort, _pinned, _covers) { items, sort, pins, covers -> buildAlbums(items, sort, pins, covers) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Uses [mediaId] as the album's cover; null goes back to the newest photo. */
+    fun setAlbumCover(key: String, mediaId: Long?) {
+        val next = _covers.value.toMutableMap().apply { if (mediaId == null) remove(key) else put(key, mediaId) }
+        _covers.value = next
+        prefs.edit().putStringSet("covers", next.map { "${it.key}=${it.value}" }.toSet()).apply()
+    }
+
+    // --- Glass look (how frosted the bars, docks and menus are) ---
+    private val _glass = MutableStateFlow(prefs.getFloat("glass", 0.5f))
+    val glass: StateFlow<Float> = _glass.asStateFlow()
+
+    fun setGlass(v: Float) {
+        _glass.value = v.coerceIn(0f, 1f)
+        prefs.edit().putFloat("glass", _glass.value).apply()
+    }
 
     private var started = false
     private var refreshJob: Job? = null
@@ -529,13 +552,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             ?: "Album"
     }
 
-    private fun buildAlbums(items: List<Media>, sort: AlbumSort, pins: Set<String>): List<Album> {
+    private fun buildAlbums(items: List<Media>, sort: AlbumSort, pins: Set<String>, covers: Map<String, Long>): List<Album> {
         val groups = items.groupBy { it.bucketId }
         val list = groups.map { (id, media) ->
+            val chosen = covers[id.toString()]?.let { c -> media.firstOrNull { it.id == c } }
             Album(
                 key = id.toString(),
                 name = media.first().bucketName,
-                cover = media.first(),
+                cover = chosen ?: media.first(),
                 count = media.size,
                 latest = media.first().dateTaken,
                 pinned = id.toString() in pins,
