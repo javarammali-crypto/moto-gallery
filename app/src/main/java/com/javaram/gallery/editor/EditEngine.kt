@@ -67,6 +67,10 @@ data class EditParams(
     val filter: String = "Original",
     val filterAmount: Float = 1f,
     val background: Background = Background.Keep,
+    /** Areas removed with AI, in order. Each mask covers the cropped picture. */
+    val erase: List<Bitmap> = emptyList(),
+    /** Pen strokes and text on top of everything. */
+    val marks: List<Mark> = emptyList(),
 )
 
 object EditEngine {
@@ -267,17 +271,18 @@ object EditEngine {
      * Everything except the colour matrix (which the preview applies live on the GPU):
      * geometry → background → tone → vignette.
      */
-    fun renderBase(src: Bitmap, p: EditParams, fg: Bitmap?): Bitmap {
-        var b = geometry(src, p.geometry)
-        b = composite(b, fg, p.background)
-        if (!b.isMutable) b = b.copy(Bitmap.Config.ARGB_8888, true)
+    fun renderBase(src: Bitmap, p: EditParams, fg: Bitmap?, geo: Bitmap? = null): Bitmap {
+        val start = geo ?: geometry(src, p.geometry)
+        var b = composite(start, fg, p.background)
+        // Never paint over the source or a cached picture: tone and vignette work in place.
+        if (!b.isMutable || b === src || b === geo) b = b.copy(Bitmap.Config.ARGB_8888, true)
         b = applyTone(b, p.adjust)
         b = applyVignette(b, p.adjust.vignette)
         return b
     }
 
-    fun renderFull(src: Bitmap, p: EditParams, fg: Bitmap?): Bitmap =
-        applyMatrix(renderBase(src, p, fg), colorMatrix(p))
+    fun renderFull(src: Bitmap, p: EditParams, fg: Bitmap?, geo: Bitmap? = null): Bitmap =
+        Markup.apply(applyMatrix(renderBase(src, p, fg, geo), colorMatrix(p)), p.marks)
 
     // ---------------- Saving ----------------
 

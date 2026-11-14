@@ -127,6 +127,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.javaram.gallery.editor.AiEngine
+import com.javaram.gallery.editor.BrushStroke
+import com.javaram.gallery.editor.FoundSubject
+import com.javaram.gallery.editor.Markup
+import com.javaram.gallery.editor.TextMark
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Draw
+import androidx.compose.runtime.DisposableEffect
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -137,6 +145,8 @@ private enum class Tool(val label: String, val icon: ImageVector) {
     Adjust("Adjust", Icons.Outlined.Tune),
     Filter("Filter", Icons.Outlined.Filter),
     Cutout("Background", Icons.Outlined.AutoFixHigh),
+    Markup("Markup", Icons.Outlined.Draw),
+    Ai("AI", Icons.Outlined.AutoAwesome),
 }
 
 private enum class AdjustParam(val label: String, val icon: ImageVector, val signed: Boolean = true) {
@@ -215,6 +225,7 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
     var oriented by remember { mutableStateOf<Bitmap?>(null) }
     var subject by remember { mutableStateOf<Bitmap?>(null) }
     var subjectKey by remember { mutableStateOf<Geometry?>(null) }
+    var subjectFor by remember { mutableStateOf(0) }
     var finding by remember { mutableStateOf(false) }
     var base by remember { mutableStateOf<Bitmap?>(null) }
     var plain by remember { mutableStateOf<Bitmap?>(null) }
@@ -225,6 +236,26 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
     var saveMenu by remember { mutableStateOf(false) }
     var saveAnchor by remember { mutableStateOf<Rect?>(null) }
     var confirm by remember { mutableStateOf<ConfirmRequest?>(null) }
+
+    // Before/after divider (null = off)
+    var split by remember { mutableStateOf<Float?>(null) }
+    // Markup
+    var markMode by remember { mutableStateOf(MarkMode.Pen) }
+    var markColor by remember { mutableStateOf(markColors[2]) }
+    var markSize by remember { mutableStateOf(0.3f) }
+    var selText by remember { mutableStateOf<Int?>(null) }
+    var textDialog by remember { mutableStateOf<Offset?>(null) }
+    var editingText by remember { mutableStateOf(false) }
+    // AI
+    var aiMode by remember { mutableStateOf<AiMode?>(null) }
+    var aiBusy by remember { mutableStateOf<String?>(null) }
+    var brush by remember { mutableStateOf<List<BrushStroke>>(emptyList()) }
+    var brushSize by remember { mutableStateOf(0.35f) }
+    var found by remember { mutableStateOf<List<FoundSubject>>(emptyList()) }
+    var chosen by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    /** Picture after each AI removal (same order as params.erase). */
+    var erased by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
+    DisposableEffect(Unit) { onDispose { AiEngine.release() } }
 
     val changed = params != EditParams()
 
@@ -250,14 +281,15 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
     }
 
     // Subject cut-out, recomputed when geometry changes and a background mode is on.
-    LaunchedEffect(source, params.background, g) {
+    LaunchedEffect(source, params.background, g, erased) {
         val s = source ?: return@LaunchedEffect
         if (params.background == Background.Keep) return@LaunchedEffect
-        if (subjectKey == g && subject != null) return@LaunchedEffect
+        if (subjectKey == g && subject != null && subjectFor == erased.size) return@LaunchedEffect
         finding = true
         val cut = runCatching {
-            EditEngine.subject(withContext(Dispatchers.Default) { EditEngine.geometry(s, g) })
+            EditEngine.subject(erased.lastOrNull() ?: withContext(Dispatchers.Default) { EditEngine.geometry(s, g) })
         }.getOrNull()
+        subjectFor = erased.size
         finding = false
         if (cut == null) {
             toast(context, "Couldn't find a subject in this photo")
@@ -269,12 +301,13 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
     }
 
     // Base render (everything except colour, which is applied live).
-    LaunchedEffect(source, g, params.adjust.highlights, params.adjust.shadows, params.adjust.fade, params.adjust.vignette, params.background, subject) {
+    LaunchedEffect(source, g, params.adjust.highlights, params.adjust.shadows, params.adjust.fade, params.adjust.vignette, params.background, subject, erased) {
         val s = source ?: return@LaunchedEffect
         delay(30)
         val fg = if (params.background != Background.Keep && subjectKey == g) subject else null
         val p = params
-        base = withContext(Dispatchers.Default) { EditEngine.renderBase(s, p, fg) }
+        val geo = erased.lastOrNull()
+        base = withContext(Dispatchers.Default) { EditEngine.renderBase(s, p, fg, geo) }
         plain = withContext(Dispatchers.Default) { EditEngine.geometry(s, g) }
     }
 
@@ -319,19 +352,41 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
                     onCrop = { params = params.copy(geometry = params.geometry.copy(crop = it)) },
                 )
                 b != null -> {
-                    val show = if (comparing) plain ?: b else b
-                    Box(contentAlignment = Alignment.Center) {
-                        if (params.background == Background.Transparent && !comparing) {
-                            Checkerboard(show.width.toFloat() / show.height)
-                        }
-                        Image(
-                            bitmap = show.asImageBitmap(),
-                            contentDescription = null,
-                            contentScale = ContentScale.Fit,
-                            colorFilter = if (comparing) null else ColorFilter.colorMatrix(liveMatrix),
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
+                    EditorStage(
+                        shown = b,
+                        original = plain,
+                        matrix = liveMatrix,
+                        transparent = params.background == Background.Transparent,
+                        marks = params.marks,
+                        split = split,
+                        onSplit = { split = it },
+                        mode = when {
+                            tool == Tool.Markup -> StageMode.Markup
+                            tool == Tool.Ai && aiMode == AiMode.Erase && aiBusy == null -> StageMode.Erase
+                            tool == Tool.Ai && aiMode == AiMode.People && aiBusy == null -> StageMode.People
+                            else -> StageMode.View
+                        },
+                        markMode = markMode,
+                        markColor = markColor,
+                        markSize = markSize,
+                        selectedText = selText,
+                        onMarks = { params = params.copy(marks = it) },
+                        onSelectText = { i ->
+                            selText = i
+                            (i?.let { params.marks.getOrNull(it) } as? TextMark)?.let { t ->
+                                markColor = t.color
+                                markSize = ((t.size - 0.03f) / 0.12f).coerceIn(0f, 1f)
+                            }
+                        },
+                        onNewText = { pos -> editingText = false; textDialog = pos },
+                        brush = brush,
+                        brushSize = brushSize,
+                        onBrush = { brush = it },
+                        subjects = found,
+                        chosen = chosen,
+                        onToggle = { i -> chosen = if (i in chosen) chosen - i else chosen + i },
+                        checker = { ratio -> Checkerboard(ratio) },
+                    )
                 }
             }
             if (finding) {
@@ -363,21 +418,19 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
                 Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .pointerInput(Unit) {
-                        awaitEachGesture {
-                            awaitFirstDown(pass = PointerEventPass.Initial)
-                            comparing = true
-                            do {
-                                val e = awaitPointerEvent(PointerEventPass.Initial)
-                            } while (e.changes.any { it.pressed })
-                            comparing = false
-                        }
+                    .background(if (split != null) Accent else Color.Transparent)
+                    .pressable(enabled = changed || split != null) {
+                        split = if (split == null) 0.5f else null
+                        if (split != null) toast(context, "Drag across the photo to compare. Hold the photo to see the original")
                     },
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Outlined.Compare, "Hold to compare", tint = Color.White.copy(alpha = if (changed) 1f else 0.4f)) }
+            ) { Icon(Icons.Outlined.Compare, "Before and after", tint = Color.White.copy(alpha = if (changed || split != null) 1f else 0.4f)) }
             Spacer(Modifier.width(6.dp))
             Box(
-                Modifier.size(40.dp).clip(CircleShape).pressable(enabled = changed) { params = EditParams(); aspect = null },
+                Modifier.size(40.dp).clip(CircleShape).pressable(enabled = changed) {
+                    params = EditParams(); aspect = null
+                    erased = emptyList(); brush = emptyList(); selText = null; aiMode = null; split = null
+                },
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Outlined.RestartAlt, "Reset", tint = Color.White.copy(alpha = if (changed) 1f else 0.4f)) }
             Spacer(Modifier.weight(1f))
@@ -444,6 +497,101 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
                             busy = finding,
                             onSelect = { params = params.copy(background = it) },
                         )
+                        Tool.Markup -> {
+                            val selMark = selText?.let { params.marks.getOrNull(it) as? TextMark }
+                            fun updateSel(f: (TextMark) -> TextMark) {
+                                val i = selText ?: return
+                                val t = params.marks.getOrNull(i) as? TextMark ?: return
+                                params = params.copy(marks = params.marks.toMutableList().also { it[i] = f(t) })
+                            }
+                            MarkupPanel(
+                                mode = markMode,
+                                onMode = { markMode = it; selText = null },
+                                color = markColor,
+                                onColor = { c -> markColor = c; updateSel { it.copy(color = c) } },
+                                size = markSize,
+                                onSize = { v -> markSize = v; updateSel { it.copy(size = textSize(v)) } },
+                                canUndo = params.marks.isNotEmpty(),
+                                onUndo = { selText = null; params = params.copy(marks = params.marks.dropLast(1)) },
+                                selected = selMark,
+                                onEditText = { editingText = true; textDialog = selMark?.center },
+                                onDeleteText = {
+                                    val i = selText
+                                    if (i != null) params = params.copy(marks = params.marks.filterIndexed { k, _ -> k != i })
+                                    selText = null
+                                },
+                                onToggleBox = { updateSel { it.copy(boxed = !it.boxed) } },
+                            )
+                        }
+                        Tool.Ai -> AiPanel(
+                            mode = aiMode,
+                            busy = aiBusy,
+                            brushSize = brushSize,
+                            onBrushSize = { brushSize = it },
+                            hasBrush = brush.isNotEmpty(),
+                            chosenCount = chosen.size,
+                            canUndo = erased.isNotEmpty(),
+                            onErase = { split = null; brush = emptyList(); aiMode = AiMode.Erase },
+                            onPeople = {
+                                val pic = erased.lastOrNull() ?: plain
+                                if (pic != null) scope.launch {
+                                    split = null
+                                    aiBusy = "Finding people and objects…"
+                                    val subs = runCatching { AiEngine.subjects(pic) }.getOrDefault(emptyList())
+                                    aiBusy = null
+                                    if (subs.isEmpty()) {
+                                        toast(context, "No people or objects found. Try Erase and paint over them")
+                                    } else {
+                                        val main = AiEngine.mainSubjects(subs)
+                                        found = subs
+                                        chosen = subs.indices.toSet() - main
+                                        if (chosen.isEmpty()) toast(context, "No one in the background. Tap anything you want removed")
+                                        aiMode = AiMode.People
+                                    }
+                                }
+                            },
+                            onEnhance = {
+                                val pic = erased.lastOrNull() ?: plain
+                                if (pic != null) scope.launch {
+                                    aiBusy = "Enhancing…"
+                                    val a = runCatching { AiEngine.enhance(pic) }.getOrNull()
+                                    aiBusy = null
+                                    if (a != null) {
+                                        params = params.copy(
+                                            adjust = params.adjust.copy(
+                                                exposure = a.exposure, contrast = a.contrast, shadows = a.shadows,
+                                                highlights = a.highlights, saturation = a.saturation,
+                                            )
+                                        )
+                                        toast(context, "Enhanced. Fine-tune it in Adjust")
+                                    }
+                                }
+                            },
+                            onApply = {
+                                val pic = erased.lastOrNull() ?: plain
+                                if (pic != null) scope.launch {
+                                    val mask = if (aiMode == AiMode.Erase) Markup.brushMask(brush, pic.width, pic.height)
+                                    else AiEngine.subjectMask(found, chosen, pic.width, pic.height)
+                                    aiBusy = "Removing…"
+                                    val out = runCatching { AiEngine.erase(context, pic, mask) }.getOrNull()
+                                    aiBusy = null
+                                    if (out == null) {
+                                        toast(context, "Couldn't remove that. Try a smaller area")
+                                    } else {
+                                        erased = erased + out
+                                        params = params.copy(erase = params.erase + mask)
+                                        brush = emptyList(); found = emptyList(); chosen = emptySet()
+                                        aiMode = null
+                                    }
+                                }
+                            },
+                            onClear = { brush = emptyList() },
+                            onCancel = { aiMode = null; brush = emptyList(); found = emptyList(); chosen = emptySet() },
+                            onUndo = {
+                                erased = erased.dropLast(1)
+                                params = params.copy(erase = params.erase.dropLast(1))
+                            },
+                        )
                     }
                 }
             }
@@ -453,13 +601,29 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
                     Tool.entries.forEach { t ->
                         val sel = t == tool
                         Column(
-                            Modifier.width(80.dp).pressable { tool = t },
+                            Modifier.width(62.dp).pressable(enabled = aiBusy == null) {
+                                if (t == Tool.Crop && tool != Tool.Crop && (params.erase.isNotEmpty() || params.marks.isNotEmpty())) {
+                                    confirm = ConfirmRequest(
+                                        "Crop and rotate again?",
+                                        "Your drawings and AI removals were made on the current framing, so they'll be cleared.",
+                                        "Continue",
+                                    ) {
+                                        params = params.copy(erase = emptyList(), marks = emptyList())
+                                        erased = emptyList(); selText = null
+                                        tool = Tool.Crop
+                                    }
+                                } else {
+                                    if (t != Tool.Ai) { aiMode = null; brush = emptyList() }
+                                    if (t != Tool.Markup) selText = null
+                                    tool = t
+                                }
+                            },
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
                             Icon(t.icon, t.label, tint = if (sel) Accent else Color.White, modifier = Modifier.size(22.dp))
                             Spacer(Modifier.height(3.dp))
                             Text(
-                                t.label, fontSize = 11.sp,
+                                t.label, fontSize = 10.sp, maxLines = 1,
                                 fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
                                 color = if (sel) Accent else Color.White,
                             )
@@ -503,6 +667,28 @@ private fun EditorContent(media: Media, vm: GalleryViewModel, onClose: () -> Uni
             }
         }
 
+        com.javaram.gallery.ui.people.NameDialog(
+            visible = textDialog != null,
+            haze = haze,
+            initial = if (editingText) (selText?.let { params.marks.getOrNull(it) as? TextMark }?.text ?: "") else "",
+            title = if (editingText) "Edit text" else "Add text",
+            placeholder = "Type something",
+            onDismiss = { textDialog = null },
+            onSave = { text ->
+                val pos = textDialog
+                textDialog = null
+                if (text.isBlank() || pos == null) return@NameDialog
+                val i = selText
+                if (editingText && i != null) {
+                    val t = params.marks.getOrNull(i) as? TextMark
+                    if (t != null) params = params.copy(marks = params.marks.toMutableList().also { it[i] = t.copy(text = text.trim()) })
+                } else {
+                    params = params.copy(marks = params.marks + TextMark(text.trim(), pos, textSize(markSize), markColor, boxed = false))
+                    selText = params.marks.lastIndex
+                }
+            },
+        )
+
         GlassDialog(request = confirm, state = haze, onDismiss = { confirm = null })
     }
 }
@@ -519,10 +705,11 @@ private suspend fun doSave(
     setSaving(true)
     val ok = runCatching {
         val full = EditEngine.load(context, media.uri, 4096)
-        val fg = if (params.background != Background.Keep) {
-            EditEngine.subject(withContext(Dispatchers.Default) { EditEngine.geometry(full, params.geometry) })
-        } else null
-        val out = withContext(Dispatchers.Default) { EditEngine.renderFull(full, params, fg) }
+        // Replay the AI removals on the full-resolution picture.
+        var geo = withContext(Dispatchers.Default) { EditEngine.geometry(full, params.geometry) }
+        for (mask in params.erase) geo = AiEngine.erase(context, geo, mask)
+        val fg = if (params.background != Background.Keep) EditEngine.subject(geo) else null
+        val out = withContext(Dispatchers.Default) { EditEngine.renderFull(full, params, fg, geo) }
         if (overwrite) EditEngine.overwrite(context, media, out)
         else EditEngine.saveCopy(context, media, out, png = params.background == Background.Transparent) != null
     }.getOrDefault(false)
@@ -757,6 +944,21 @@ private fun AdjustPanel(adjust: Adjust, selected: AdjustParam, onSelect: (Adjust
             Text(selected.label, color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, modifier = Modifier.width(76.dp))
             EditorSlider(v, signed = selected.signed, onChange = onChange, modifier = Modifier.weight(1f))
             Text("${(v * 100).roundToInt()}", color = Color.White, fontSize = 12.sp, modifier = Modifier.width(36.dp))
+            // Reset just this slider.
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = if (v != 0f) 0.14f else 0f))
+                    .pressable(enabled = v != 0f) { onChange(0f) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.RestartAlt, "Reset ${selected.label}",
+                    tint = Color.White.copy(alpha = if (v != 0f) 1f else 0.25f),
+                    modifier = Modifier.size(17.dp),
+                )
+            }
         }
         Spacer(Modifier.height(10.dp))
         val row = rememberLazyListState()
