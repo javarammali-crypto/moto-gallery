@@ -19,3 +19,11 @@ only**. This app is free and has no ads; using the app commercially would need a
 (Apache License 2.0), converted from the Keras FaceNet weights in
 [nyoki-mtl/keras-facenet](https://github.com/nyoki-mtl/keras-facenet), based on
 David Sandberg's [facenet](https://github.com/davidsandberg/facenet) (MIT).
+
+## Photo eraser: `app/src/main/assets/inpaint_migan.tflite`
+
+MI-GAN 512 inpainting model (Picsart AI Research), https://github.com/Picsart-AI-Research/MI-GAN —
+code and weights under the **MIT License**. Weights taken from the traced Places2 512 model
+published with IOPaint, exported to ONNX, with its zero-insertion upsampling rewritten as
+equivalent standard operations (outputs identical), then converted to TensorFlow Lite with
+float16 weights. Input: 512×512×4 (known-mask − 0.5, RGB × mask in −1..1); output: 3×512×512 RGB.
