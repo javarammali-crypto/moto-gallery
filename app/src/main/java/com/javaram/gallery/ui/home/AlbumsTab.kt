@@ -83,6 +83,7 @@ fun AlbumsTab(
     onOpenTrash: () -> Unit,
     onAlbumMenu: (Album, androidx.compose.ui.geometry.Rect?) -> Unit,
     people: List<com.javaram.gallery.search.Person> = emptyList(),
+    showPeople: Boolean = true,
     onOpenPeople: () -> Unit = {},
     onOpenPerson: (Long) -> Unit = {},
     onOpenSafe: () -> Unit = {},
@@ -115,8 +116,10 @@ fun AlbumsTab(
         item(span = { GridItemSpan(maxLineSpan) }, key = "header") {
             LargeHeader("Albums", "${albums.size} albums")
         }
-        item(span = { GridItemSpan(maxLineSpan) }, key = "people") {
-            PeopleRow(people, all, onOpenPeople, onOpenPerson)
+        if (showPeople) {
+            item(span = { GridItemSpan(maxLineSpan) }, key = "people") {
+                PeopleRow(people, all, onOpenPeople, onOpenPerson)
+            }
         }
         items(quick, key = { "q-" + it.key }) { q ->
             AlbumTile(

@@ -19,11 +19,16 @@ import com.javaram.gallery.search.Person
 import com.javaram.gallery.search.IndexEntry
 import com.javaram.gallery.search.IndexProgress
 import com.javaram.gallery.search.Indexer
+import com.javaram.gallery.search.LatestRequestRunner
 import com.javaram.gallery.search.SearchIndex
 import com.javaram.gallery.update.UpdateInfo
 import com.javaram.gallery.update.Updater
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -281,23 +286,89 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         if (peopleWatch == null) {
             peopleWatch = viewModelScope.launch { FaceIndexer.generation.collect { reloadPeople() } }
         }
+        // Faces have their own job, so switching them off or on never waits for the other indexers.
+        startFaceIndexing(items)
         if (indexJob?.isActive == true) return
         indexJob = viewModelScope.launch {
-            // Search analysis and face grouping run side by side.
+            // Search analysis and quality run side by side.
             val labels = launch { Indexer.run(getApplication(), items) }
-            val faces = launch { FaceIndexer.run(getApplication(), items) }
             val quality = launch { com.javaram.gallery.search.QualityIndexer.run(getApplication(), items) }
-            labels.join(); faces.join(); quality.join()
+            labels.join(); quality.join()
         }
     }
 
     // --- People ---
     val faceProgress: StateFlow<IndexProgress> = FaceIndexer.progress
+
+    // --- Face recognition switch ---
+    // Off: no face scanning, no new faces, no regrouping. Saved data is kept. On by default.
+    // Null until the saved choice has been read: the UI must not show a position for it. Unavailable when the read failed.
+    private val _faceRecognition = MutableStateFlow<Boolean?>(null)
+    val faceRecognitionEnabled: StateFlow<Boolean?> = _faceRecognition.asStateFlow()
+    private val _faceUnavailable = MutableStateFlow(false)
+    /** True when the saved choice couldn't be read. The switch stays unavailable until Gallery is reopened. */
+    val faceRecognitionUnavailable: StateFlow<Boolean> = _faceUnavailable.asStateFlow()
+    // Newest library snapshot only; FaceIndexer serialises scans and drops any queued before a switch.
+    private val faceScans = LatestRequestRunner<List<Media>>(viewModelScope) { items ->
+        FaceIndexer.run(getApplication(), items)
+    }
+    // Changes are applied one at a time, in request order, off the main thread: the gate can wait on a database write.
+    private val faceSwitch = OrderedSwitch(
+        scope = viewModelScope,
+        dispatcher = Dispatchers.IO,
+        initial = { FaceIndexer.isEnabled(getApplication()) },
+        apply = { FaceIndexer.setEnabled(getApplication(), it) },
+        onInitial = { read ->
+            read.onSuccess { enabled ->
+                _faceRecognition.value = enabled
+                _faceUnavailable.value = false
+                // A library that loaded before the read finished starts its scan here.
+                // No value was known before this read, so an on read counts as a change to on.
+                if (faceScanTrigger(known = null, enabled = enabled, changed = false)) startFaceIndexing(_all.value)
+            }.onFailure {
+                _faceUnavailable.value = true
+            }
+        },
+        onApplied = { enabled, changed ->
+            val wasKnown = _faceRecognition.value != null
+            _faceRecognition.value = enabled
+            _faceUnavailable.value = false
+            // Turning on starts a scan; repeating the current state changes nothing.
+            if (faceScanTrigger(known = wasKnown, enabled = enabled, changed = changed)) startFaceIndexing(_all.value)
+        },
+    )
+
+    /**
+     * Queues the change and returns at once. Switching off doesn't cancel a scan: it stops at its next
+     * checkpoint, and an ML Kit call already running finishes first. The switch in the UI moves only when
+     * the change has been applied.
+     */
+    fun setFaceRecognitionEnabled(enabled: Boolean) {
+        faceSwitch.request(enabled)
+    }
+
+    private fun startFaceIndexing(items: List<Media>) {
+        // An empty list would make FaceIndexer forget every face, so wait until the library has loaded.
+        // Nothing starts until the saved choice is known to be on.
+        if (_faceRecognition.value != true || items.isEmpty()) return
+        faceScans.submit(items)
+    }
+
     private var peopleWatch: Job? = null
     private val _people = MutableStateFlow<List<Person>>(emptyList())
-    val people: StateFlow<List<Person>> = _people.asStateFlow()
     private val _peopleByMedia = MutableStateFlow<Map<Long, Set<String>>>(emptyMap())
-    val peopleByMedia: StateFlow<Map<Long, Set<String>>> = _peopleByMedia.asStateFlow()
+    // Face-derived content is only exposed while recognition is on. Turning it off hides every
+    // People surface (the Albums row, person search and person memories) without deleting the
+    // persisted data: the raw flows above keep it, so it all reappears when recognition is back on.
+    // Null (still loading) or an unavailable switch also hides faces, never shows them by default.
+    val people: StateFlow<List<Person>> =
+        combine(_faceRecognition, _people) { enabled, list ->
+            if (facesVisible(enabled)) list else emptyList()
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val peopleByMedia: StateFlow<Map<Long, Set<String>>> =
+        combine(_faceRecognition, _peopleByMedia) { enabled, map ->
+            if (facesVisible(enabled)) map else emptyMap()
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
     private val _peopleVersion = MutableStateFlow(0)
     val peopleVersion: StateFlow<Int> = _peopleVersion.asStateFlow()
 
@@ -398,7 +469,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Memories & slideshow ---
     val memories: StateFlow<List<com.javaram.gallery.search.Memory>> =
-        combine(_all, _index, _peopleByMedia) { a, i, p -> Triple(a, i, p) }
+        combine(_all, _index, peopleByMedia) { a, i, p -> Triple(a, i, p) }
             .mapLatestDefault { (a, i, p) -> com.javaram.gallery.search.Memories.build(a, i, p) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -560,6 +631,68 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
+
+/**
+ * Applies switch changes one at a time, in the order they were requested, on [dispatcher]. [request] only
+ * queues, so it never blocks the caller. [apply] may block. [onApplied] gets the new state and whether it
+ * changed. A change that fails to apply leaves the last applied state in place.
+ */
+internal class OrderedSwitch(
+    scope: CoroutineScope,
+    dispatcher: CoroutineDispatcher,
+    initial: () -> Boolean,
+    private val apply: (Boolean) -> Boolean,
+    private val onInitial: (Result<Boolean>) -> Unit,
+    private val onApplied: (enabled: Boolean, changed: Boolean) -> Unit,
+) {
+    private val requests = Channel<Boolean>(Channel.UNLIMITED)
+
+    init {
+        scope.launch(dispatcher) {
+            // The saved choice is read before any queued change, so a change never lands ahead of its read.
+            val read = try {
+                Result.success(initial())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            try {
+                onInitial(read)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Publishing the read failed: the state stays unknown.
+            }
+            for (value in requests) {
+                try {
+                    onApplied(value, apply(value))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Keep going: later requests still apply, and the last applied state stays published.
+                }
+            }
+        }
+    }
+
+    fun request(value: Boolean) {
+        requests.trySend(value)
+    }
+}
+
+/**
+ * Whether a face scan should start after the switch was read or changed. Only a switch that is on and
+ * just became on (or was never read before) starts one; a read that failed or came back off never does.
+ */
+internal fun faceScanTrigger(known: Boolean?, enabled: Boolean, changed: Boolean): Boolean =
+    enabled && (changed || known == null)
+
+/**
+ * Whether face-derived content may be shown. Only an explicitly verified "on" shows faces:
+ * off, still loading (null) and unavailable all hide them.
+ */
+internal fun facesVisible(enabled: Boolean?): Boolean = enabled == true
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 private fun <T, R> kotlinx.coroutines.flow.Flow<T>.mapLatestDefault(block: suspend (T) -> R): kotlinx.coroutines.flow.Flow<R> =

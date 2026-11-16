@@ -101,9 +101,11 @@ import com.javaram.gallery.ui.theme.GalleryTheme
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SystemUpdate
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import com.javaram.gallery.ui.Routes
 import com.javaram.gallery.ui.UpdateDialog
 import com.javaram.gallery.ui.components.ConfirmRequest
 import com.javaram.gallery.ui.components.GlassDialog
@@ -153,6 +155,8 @@ fun HomeScreen(
     val bannerDismissed by vm.bannerDismissed.collectAsStateWithLifecycle()
     val update by vm.update.collectAsStateWithLifecycle()
     val people by vm.people.collectAsStateWithLifecycle()
+    val faceRecognition by vm.faceRecognitionEnabled.collectAsStateWithLifecycle()
+    val showPeople = com.javaram.gallery.facesVisible(faceRecognition)
     val memories by vm.memories.collectAsStateWithLifecycle()
     val hiddenAlbums by vm.hiddenAlbums.collectAsStateWithLifecycle()
     val hideMusicArt by vm.hideMusicArt.collectAsStateWithLifecycle()
@@ -263,6 +267,7 @@ fun HomeScreen(
                         onOpenTrash = onOpenTrash,
                         onAlbumMenu = { a, r -> sheet = HomeSheet.AlbumMenu(a, r) },
                         people = people,
+                        showPeople = showPeople,
                         onOpenPeople = onOpenPeople,
                         onOpenPerson = onOpenPerson,
                         onOpenSafe = { onOpenRoute("safe") },
@@ -449,6 +454,7 @@ fun HomeScreen(
                     })
                 }
                 add(SheetOption("Refresh", Icons.Outlined.Refresh) { vm.scheduleRefresh(0) })
+                add(SheetOption("Settings", Icons.Outlined.Settings) { onOpenRoute(Routes.SETTINGS) })
             }
             else -> emptyList()
         }

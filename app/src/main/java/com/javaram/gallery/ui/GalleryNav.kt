@@ -22,6 +22,7 @@ import com.javaram.gallery.ui.people.PeopleScreen
 import com.javaram.gallery.ui.people.PersonScreen
 import com.javaram.gallery.ui.search.PlacesMapScreen
 import com.javaram.gallery.ui.search.SearchScreen
+import com.javaram.gallery.ui.settings.SettingsScreen
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.javaram.gallery.GalleryViewModel
@@ -38,6 +39,7 @@ object Routes {
     const val MAP = "map"
     const val PEOPLE = "people"
     const val PERSON = "person/{id}"
+    const val SETTINGS = "settings"
     fun person(id: Long) = "person/$id"
     fun album(key: String) = "album/$key"
     fun search(q: String = "") = "search?q=" + android.net.Uri.encode(q)
@@ -46,6 +48,16 @@ object Routes {
 @Composable
 fun GalleryNav(vm: GalleryViewModel) {
     val nav = rememberNavController()
+    val faceRecognition by vm.faceRecognitionEnabled.collectAsStateWithLifecycle()
+    val showPeople = com.javaram.gallery.facesVisible(faceRecognition)
+
+    // If recognition is switched off while a People/Person screen is open, leave it at once.
+    androidx.compose.runtime.LaunchedEffect(showPeople) {
+        if (!showPeople) {
+            val route = nav.currentBackStackEntry?.destination?.route
+            if (route == Routes.PEOPLE || route == Routes.PERSON) nav.popBackStack()
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(GalleryTheme.colors.background)) {
         NavHost(
@@ -63,8 +75,8 @@ fun GalleryNav(vm: GalleryViewModel) {
                     onOpenAlbum = { key -> nav.navigate(Routes.album(key)) },
                     onOpenTrash = { nav.navigate(Routes.TRASH) },
                     onOpenSearch = { nav.navigate(Routes.search()) },
-                    onOpenPeople = { nav.navigate(Routes.PEOPLE) },
-                    onOpenPerson = { nav.navigate(Routes.person(it)) },
+                    onOpenPeople = { if (showPeople) nav.navigate(Routes.PEOPLE) },
+                    onOpenPerson = { if (showPeople) nav.navigate(Routes.person(it)) },
                     onOpenRoute = { nav.navigate(it) },
                 )
             }
@@ -87,7 +99,7 @@ fun GalleryNav(vm: GalleryViewModel) {
                     initialQuery = entry.arguments?.getString("q") ?: "",
                     onBack = { nav.popBackStack() },
                     onOpenMap = { nav.navigate(Routes.MAP) },
-                    onOpenPerson = { nav.navigate(Routes.person(it)) },
+                    onOpenPerson = { if (showPeople) nav.navigate(Routes.person(it)) },
                 )
             }
             composable(Routes.PEOPLE) {
@@ -96,6 +108,9 @@ fun GalleryNav(vm: GalleryViewModel) {
                     onBack = { nav.popBackStack() },
                     onOpenPerson = { nav.navigate(Routes.person(it)) },
                 )
+            }
+            composable(Routes.SETTINGS) {
+                SettingsScreen(vm = vm, onBack = { nav.popBackStack() })
             }
             composable(
                 Routes.PERSON,
